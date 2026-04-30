@@ -75,7 +75,7 @@ const { lang = 'en' } = Astro.props;
     const btn = document.getElementById('download-btn');
     const label = document.getElementById('download-label');
     if (btn && label && navigator.userAgent.includes('Windows')) {
-      btn.setAttribute('href', 'https://github.com/rainnoon/oc-claw/releases/download/v1.8.1/oc-claw_1.8.1_x64-setup.exe');
+      btn.setAttribute('href', 'https://github.com/rainnoon/oc-claw/releases/download/v1.8.2/oc-claw_1.8.2_x64-setup.exe');
       label.textContent = winLabel;
       const mockup = document.querySelector('.v6-macbook');
       if (mockup) mockup.style.display = 'none';
