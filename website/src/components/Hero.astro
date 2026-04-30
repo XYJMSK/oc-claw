@@ -77,10 +77,11 @@ const { lang = 'en' } = Astro.props;
     if (btn && label && navigator.userAgent.includes('Windows')) {
       btn.setAttribute('href', 'https://github.com/rainnoon/oc-claw/releases/download/v1.8.2/oc-claw_1.8.2_x64-setup.exe');
       label.textContent = winLabel;
-      const mockup = document.querySelector('.v6-macbook');
-      if (mockup) mockup.style.display = 'none';
-      const actions = document.querySelector('.oc-actions');
-      if (actions) actions.style.display = 'none';
+      // Show the macbook mockup and the action buttons on Windows too — the
+      // mockup demo (companion / jump / approve / details / monitor) is now
+      // generic enough to run on either platform. The agent chips for
+      // Codex / Cursor are still mac-only, since hooks for those agents are
+      // not wired up on Windows yet.
       document.querySelectorAll('.agent-chip-mac').forEach(el => el.style.display = 'none');
       const tagline = document.getElementById('hero-tagline');
       if (tagline) tagline.textContent = winTagline;

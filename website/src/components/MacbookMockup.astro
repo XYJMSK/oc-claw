@@ -24,7 +24,7 @@ const mockupI18nMap: Record<string, Record<string, string>> = {
     subtitleSummarizeUiDiff: '· summarize ui diff for pr',
     subtitleIdle: '· idle after timeout investigation',
     subtitleTitleUpdated: '· title updated by monitor automation',
-    detailsHeading: 'Cursor Stats', detailsRange: 'Last 14 days',
+    detailsHeading: 'Cursor Stats', detailsHeadingWin: 'Claude Stats', detailsRange: 'Last 14 days',
     detailsTotalToken: 'TOTAL TOKENS', detailsSessions: '92 sessions',
     detailsMessages: 'Messages', detailsAiReplies: 'AI replies',
     detailsTokenBreakdown: 'Token breakdown',
@@ -53,7 +53,7 @@ const mockupI18nMap: Record<string, Record<string, string>> = {
     subtitleSummarizeUiDiff: '· 汇总 PR 的 UI 差异',
     subtitleIdle: '· 超时排查后空闲',
     subtitleTitleUpdated: '· 标题已由监控自动更新',
-    detailsHeading: 'Cursor 统计', detailsRange: '近 14 天',
+    detailsHeading: 'Cursor 统计', detailsHeadingWin: 'Claude 统计', detailsRange: '近 14 天',
     detailsTotalToken: '总 TOKEN', detailsSessions: '92 个会话',
     detailsMessages: '消息数', detailsAiReplies: 'AI 回复',
     detailsTokenBreakdown: 'TOKEN 明细',
@@ -82,7 +82,7 @@ const mockupI18nMap: Record<string, Record<string, string>> = {
     subtitleSummarizeUiDiff: '· PR の UI 差分を要約',
     subtitleIdle: '· タイムアウト調査後アイドル',
     subtitleTitleUpdated: '· 監視の自動化によりタイトル更新済み',
-    detailsHeading: 'Cursor 統計', detailsRange: '過去 14 日間',
+    detailsHeading: 'Cursor 統計', detailsHeadingWin: 'Claude 統計', detailsRange: '過去 14 日間',
     detailsTotalToken: '合計トークン', detailsSessions: '92 セッション',
     detailsMessages: 'メッセージ', detailsAiReplies: 'AI 返信',
     detailsTokenBreakdown: 'トークン内訳',
@@ -111,7 +111,7 @@ const mockupI18nMap: Record<string, Record<string, string>> = {
     subtitleSummarizeUiDiff: '· PR UI 차이 요약',
     subtitleIdle: '· 타임아웃 조사 후 유휴',
     subtitleTitleUpdated: '· 모니터 자동화로 제목 업데이트됨',
-    detailsHeading: 'Cursor 통계', detailsRange: '최근 14일',
+    detailsHeading: 'Cursor 통계', detailsHeadingWin: 'Claude 통계', detailsRange: '최근 14일',
     detailsTotalToken: '총 토큰', detailsSessions: '92개 세션',
     detailsMessages: '메시지', detailsAiReplies: 'AI 응답',
     detailsTokenBreakdown: '토큰 내역',
@@ -140,7 +140,7 @@ const mockupI18nMap: Record<string, Record<string, string>> = {
     subtitleSummarizeUiDiff: '· resumir diferencias de UI para PR',
     subtitleIdle: '· inactivo tras investigar timeout',
     subtitleTitleUpdated: '· título actualizado por automatización',
-    detailsHeading: 'Estadísticas de Cursor', detailsRange: 'Últimos 14 días',
+    detailsHeading: 'Estadísticas de Cursor', detailsHeadingWin: 'Estadísticas de Claude', detailsRange: 'Últimos 14 días',
     detailsTotalToken: 'TOKENS TOTALES', detailsSessions: '92 sesiones',
     detailsMessages: 'Mensajes', detailsAiReplies: 'Respuestas IA',
     detailsTokenBreakdown: 'Desglose de tokens',
@@ -169,7 +169,7 @@ const mockupI18nMap: Record<string, Record<string, string>> = {
     subtitleSummarizeUiDiff: '· résumer les différences UI pour la PR',
     subtitleIdle: '· inactif après enquête de timeout',
     subtitleTitleUpdated: '· titre mis à jour par l\'automatisation',
-    detailsHeading: 'Statistiques Cursor', detailsRange: '14 derniers jours',
+    detailsHeading: 'Statistiques Cursor', detailsHeadingWin: 'Statistiques Claude', detailsRange: '14 derniers jours',
     detailsTotalToken: 'TOKENS TOTAUX', detailsSessions: '92 sessions',
     detailsMessages: 'Messages', detailsAiReplies: 'Réponses IA',
     detailsTokenBreakdown: 'Répartition des tokens',
@@ -924,8 +924,25 @@ function setupMockup() {
     notch.classList.remove('oc-notch-open');
 
     const barHeights = [72, 34, 16, 35, 2, 1, 3, 78, 14, 53, 52, 1, 0, 2];
-    content.innerHTML = `
-      <div class="oc-step oc-details-list" data-s="1">
+    // Windows ships without Codex / Cursor hook integrations, so the
+    // session list demo only highlights the agents that actually run on
+    // Windows (Feishu OpenClaw + Claude Code), and the stats card is
+    // titled accordingly.
+    const isWindows = typeof navigator !== 'undefined' && navigator.userAgent.includes('Windows');
+    const detailsHeadingText = isWindows && T.detailsHeadingWin ? T.detailsHeadingWin : T.detailsHeading;
+    const sessionRows = isWindows
+      ? `
+        <div class="oc-item">
+          <div class="oc-avatar"><img src="/images/pets/paimon_sleeping.gif" alt="" class="oc-pet-img"/><div class="oc-dot" style="background:#94a3b8;"></div></div>
+          <div class="oc-item-main"><span class="oc-title text-white">api-retry</span><span class="oc-subtitle">${T.subtitleInspect}</span></div>
+          <div class="oc-item-right"><span class="oc-badge" style="background:#334155;color:#e2e8f0;">Feishu</span><span class="oc-time">18h</span></div>
+        </div>
+        <div class="oc-item oc-detail-entry-target">
+          <div class="oc-avatar"><img src="/images/pets/furina_working.gif" alt="" class="oc-pet-img"/><div class="oc-dot" style="background:#f59e0b;"></div></div>
+          <div class="oc-item-main"><span class="oc-title text-white">auth-fix</span><span class="oc-subtitle">${T.subtitleWaitingApproval}</span></div>
+          <div class="oc-item-right"><span class="oc-badge" style="background:#3f211d;color:#e87a65;">Claude</span><span class="oc-time"><1m</span></div>
+        </div>`
+      : `
         <div class="oc-item oc-detail-entry-target">
           <div class="oc-avatar"><img src="/images/pets/furina_working.gif" alt="" class="oc-pet-img"/><div class="oc-dot" style="background:#2ecc71;"></div></div>
           <div class="oc-item-main"><span class="oc-title text-white">code2026</span><span class="oc-subtitle">${T.subtitleTune}</span></div>
@@ -945,12 +962,14 @@ function setupMockup() {
           <div class="oc-avatar"><img src="/images/pets/furina_working.gif" alt="" class="oc-pet-img"/><div class="oc-dot" style="background:#f59e0b;"></div></div>
           <div class="oc-item-main"><span class="oc-title text-white">auth-fix</span><span class="oc-subtitle">${T.subtitleWaitingApproval}</span></div>
           <div class="oc-item-right"><span class="oc-badge" style="background:#3f211d;color:#e87a65;">Claude</span><span class="oc-time"><1m</span></div>
-        </div>
+        </div>`;
+    content.innerHTML = `
+      <div class="oc-step oc-details-list" data-s="1">${sessionRows}
       </div>
       <div class="oc-step" data-s="2" style="display:none;">
         <div class="oc-detail-page">
           <div class="oc-detail-head">
-            <div class="oc-detail-heading">${T.detailsHeading}</div>
+            <div class="oc-detail-heading">${detailsHeadingText}</div>
             <div class="oc-detail-range">${T.detailsRange}</div>
           </div>
           <div class="oc-step" data-s="3">
@@ -1014,7 +1033,9 @@ function setupMockup() {
     await wait(200);
     if (listStep) showStep(listStep);
     await wait(360);
-    cursor.style.top = '23%';
+    // The entry target is the first session row on macOS and the second row
+    // (Claude auth-fix) on Windows; keep the cursor pointing at it.
+    cursor.style.top = isWindows ? '28%' : '23%';
     cursor.style.left = '23%';
     cursor.style.opacity = '1';
     await wait(340);
