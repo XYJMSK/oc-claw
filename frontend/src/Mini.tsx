@@ -2330,14 +2330,16 @@ export default function Mini() {
     if (collapsingRef.current || expandingRef.current) return
     expandingRef.current = true
     setHiding(true)
-    // Windows DWM composites the previous frame while the window is being
-    // resized + repositioned, so the collapsed mascot ghost briefly appears
-    // at the new (notch-area) window location before WebView2 supplies a
-    // fresh frame. Hide the entire document during the transition and
-    // reveal it once the expanded panel has rendered.
-    if (isWindowsPlatform) {
-      document.documentElement.style.opacity = '0'
-    }
+    // The native window has to be resized + repositioned before the
+    // expanded panel can render correctly. During that transition both
+    // Windows DWM and macOS WindowServer keep compositing the previous
+    // frame, so the collapsed mascot briefly appears at the new (notch-
+    // area) window location before the webview supplies a fresh frame.
+    // Hide the entire document during the transition and reveal it
+    // once the expanded panel has rendered. (Originally a Windows-only
+    // workaround; macOS exhibits the same ghost when hover-opening the
+    // panel from the notch.)
+    document.documentElement.style.opacity = '0'
     try {
       await new Promise<void>((r) => setTimeout(r, 50))
       await syncExpandedWindowLayout(viewModeRef.current)
@@ -2346,9 +2348,7 @@ export default function Mini() {
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
           setShowPanel(true)
-          if (isWindowsPlatform) {
-            document.documentElement.style.opacity = '1'
-          }
+          document.documentElement.style.opacity = '1'
         })
       })
     } catch (e) {
@@ -2357,14 +2357,12 @@ export default function Mini() {
       setExpanded(false)
       expandedRef.current = false
       expandedWindowModeRef.current = null
-      if (isWindowsPlatform) {
-        document.documentElement.style.opacity = '1'
-      }
+      document.documentElement.style.opacity = '1'
     } finally {
       setHiding(false)
       expandingRef.current = false
     }
-  }, [syncExpandedWindowLayout, isWindowsPlatform])
+  }, [syncExpandedWindowLayout])
   expandFnRef.current = expand
   const updateModalWindowAdjustedRef = useRef(false)
   const updateModalPrevExpandedRef = useRef(false)
@@ -3230,16 +3228,28 @@ export default function Mini() {
     settingsTransitioningRef.current = false
   }, [])
 
-  const exitSettings = useCallback(async () => {
+  // `force` is set when the close path is a trusted, in-app user action
+  // (e.g. clicking the ✕ button). Untrusted paths (blur / backdrop click)
+  // still go through the picker-grace guard so macOS-synthesised events
+  // can't tear settings down right after a native dialog closes.
+  const exitSettings = useCallback(async (force = false) => {
     if (!settingsModeRef.current || settingsTransitioningRef.current) return
-    // Defense in depth: while a native folder picker is in flight (or its
-    // post-close grace window is still active), suppress any path that
-    // would close settings — synthesized clicks, blur events, etc.
-    if (isSettingsPickerBlockingClose()) {
+    if (!force && isSettingsPickerBlockingClose()) {
       debugToTerminal('close', 'exitSettings blocked: settings picker active')
       return
     }
-    debugToTerminal('close', 'exitSettings proceed')
+    if (force) {
+      // The X button click is the user explicitly asking to close.
+      // Drop any lingering picker grace so subsequent blurs / outside
+      // clicks during the close animation don't double-fire spurious
+      // collapses on the now-closed settings panel.
+      settingsPickerOpenRef.current = false
+      settingsPickerCloseGraceUntilRef.current = 0
+      if (nativeDialogActiveRef.current) {
+        setNativeDialogActive(false)
+      }
+    }
+    debugToTerminal('close', `exitSettings proceed force=${force}`)
     setIsCreateModalOpen(false)
     settingsTransitioningRef.current = true
     setShowSettingsOverlay(false)
@@ -3305,7 +3315,7 @@ export default function Mini() {
       setHiding(false)
       debugToTerminal('close', 'exitSettings finished')
     }
-  }, [fetchAgents, restoreCollapsedMascotPosition, debugToTerminal, isSettingsPickerBlockingClose])
+  }, [fetchAgents, restoreCollapsedMascotPosition, debugToTerminal, isSettingsPickerBlockingClose, setNativeDialogActive])
 
   // Click outside to collapse (only when not pinned)
   useEffect(() => {
@@ -3347,6 +3357,13 @@ export default function Mini() {
     const onFocus = () => {
       filePickerOpenRef.current = false
       debugToTerminal('blur', 'window focus -> filePickerOpen=false')
+      // We're back in front. Re-assert always-on-top here too: macOS can
+      // sometimes demote the level silently before our blur listener
+      // observes it, leaving the settings panel sitting at normal level
+      // when focus returns. This is cheap and idempotent.
+      if (isSettingsPickerBlockingClose() || settingsModeRef.current) {
+        invoke('reassert_floating').catch(() => {})
+      }
     }
     const onBlur = () => {
       if (filePickerOpenRef.current) {
@@ -3355,9 +3372,13 @@ export default function Mini() {
       }
       if (isSettingsPickerBlockingClose()) {
         debugToTerminal('blur', 'ignore blur: settings picker active')
-        // Re-assert always-on-top: on Windows, when a native dialog is open
-        // and the user clicks outside, the OS can demote our window level.
-        if (isWindowsPlatform) invoke('reassert_floating').catch(() => {})
+        // Re-assert always-on-top whenever we lose focus while a native
+        // dialog is open. Both Windows and macOS will demote our floating
+        // mini window back to a normal level when another app (or the
+        // dialog itself) becomes active, which makes the settings panel +
+        // picker visually disappear behind other windows. Pinging Rust
+        // here pulls the window back up to status level immediately.
+        invoke('reassert_floating').catch(() => {})
         return
       }
       // Resizing the native window via `set_mini_size` during the
@@ -5438,7 +5459,7 @@ export default function Mini() {
                       data-no-drag
                       onClick={(e) => {
                         e.stopPropagation()
-                        exitSettings()
+                        exitSettings(true)
                       }}
                       style={{
                         background: 'rgba(255,255,255,0.06)',
@@ -5483,7 +5504,7 @@ export default function Mini() {
                   data-no-drag
                   onClick={(e) => {
                     e.stopPropagation()
-                    exitSettings()
+                    exitSettings(true)
                   }}
                   className="text-slate-400 hover:text-rose-500 transition-colors ml-1"
                 >
