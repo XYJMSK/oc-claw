@@ -680,6 +680,17 @@ export default function Mini() {
     mascotDragActiveRef.current = v
     _setMascotDragActive(v)
   }, [])
+  // Pending focus-driven auto-expand timer. The Windows window-focus
+  // listener defers expand() into this timer so a click landing on the
+  // mascot can cancel it and let handleMascotPointerDown decide between
+  // drag and expand instead.
+  const focusExpandTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const cancelFocusExpand = useCallback(() => {
+    if (focusExpandTimerRef.current) {
+      clearTimeout(focusExpandTimerRef.current)
+      focusExpandTimerRef.current = null
+    }
+  }, [])
   const setMoveMode = (v: boolean) => {
     moveModeRef.current = v
     if (v) moveModeActivatedAtRef.current = Date.now()
@@ -2613,6 +2624,12 @@ export default function Mini() {
           e.preventDefault()
           return
         }
+        // The window-focus auto-expand fires slightly before pointerdown
+        // when clicking an unfocused mini window. Cancel it so this click
+        // path is the single source of truth for expand vs drag —
+        // otherwise a quick wiggle ends up dragging the auto-expanded
+        // panel.
+        cancelFocusExpand()
         e.preventDefault()
         setMascotDragActive(true)
         const startX = e.screenX
@@ -2915,7 +2932,7 @@ export default function Mini() {
       window.addEventListener('pointerup', onUp)
       window.addEventListener('pointercancel', onCancel)
     },
-    [expand, updateWalkDir],
+    [expand, updateWalkDir, cancelFocusExpand],
   )
 
   const enterMoveMode = useCallback(async () => {
@@ -3386,11 +3403,26 @@ export default function Mini() {
       // Large mascot uses long-press to expand; auto-expand on focus
       // would race with the pointerdown handler and steal the click.
       if (largeMascotRef.current) return
-      expand()
+      // Defer expand by one tick so a pointerdown landing on the mascot
+      // can cancel it. Without this delay, clicking an unfocused mini
+      // window fires `focus` before `pointerdown`; the focus path opens
+      // the panel while the pointerdown path simultaneously starts the
+      // drag flow, dragging the freshly-opened panel along with the
+      // window. Cancellation lives in handleMascotPointerDown.
+      cancelFocusExpand()
+      focusExpandTimerRef.current = setTimeout(() => {
+        focusExpandTimerRef.current = null
+        if (collapsingRef.current || moveModeRef.current || mascotDragActiveRef.current) return
+        if (largeMascotRef.current) return
+        expand()
+      }, 80)
     }
     window.addEventListener('focus', onFocus)
-    return () => window.removeEventListener('focus', onFocus)
-  }, [expanded, expand, moveMode, updateModalOpen])
+    return () => {
+      window.removeEventListener('focus', onFocus)
+      cancelFocusExpand()
+    }
+  }, [expanded, expand, moveMode, updateModalOpen, cancelFocusExpand])
 
   // Exit move mode when clicking outside mascot or when window loses focus.
   // Use a debounced blur so that programmatic window moves (which briefly
