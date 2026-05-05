@@ -9721,6 +9721,58 @@ async fn install_codex_hooks() -> Result<(), String> {
     let home = dirs::home_dir().ok_or("no home dir")?;
     let codex_dir = home.join(".Codex");
     let hooks_dir = codex_dir.join("hooks");
+
+    // Codex support is dropped on Windows. Same as the cursor branch above:
+    // proactively delete any previously-installed hook script and strip our
+    // entries from hooks.json so the codex CLI cannot reach the oc-claw
+    // socket on this machine anymore.
+    #[cfg(windows)]
+    {
+        let _ = std::fs::remove_file(hooks_dir.join("ooclaw-codex-hook.ps1"));
+        // Codex's home is conventionally `.codex` on Windows but the install
+        // path used `.Codex` historically — the file system is case-
+        // insensitive so we clean the same dir, but also catch the
+        // lowercase variant explicitly in case both ever exist.
+        let alt = home.join(".codex").join("hooks").join("ooclaw-codex-hook.ps1");
+        if alt.exists() {
+            let _ = std::fs::remove_file(&alt);
+        }
+        for hooks_json_path in [codex_dir.join("hooks.json"), home.join(".codex").join("hooks.json")] {
+            if !hooks_json_path.exists() { continue; }
+            let Ok(content) = std::fs::read_to_string(&hooks_json_path) else { continue; };
+            let Ok(mut config) = serde_json::from_str::<serde_json::Value>(&content) else { continue; };
+            if let Some(hooks) = config.get_mut("hooks").and_then(|v| v.as_object_mut()) {
+                let event_names: Vec<String> = hooks.keys().cloned().collect();
+                for name in event_names {
+                    if let Some(arr) = hooks.get_mut(&name).and_then(|v| v.as_array_mut()) {
+                        arr.retain(|entry| {
+                            let cmd_match = entry.get("command").and_then(|c| c.as_str())
+                                .map(|c| c.contains("ooclaw-codex-hook"))
+                                .unwrap_or(false);
+                            let nested_match = entry.get("hooks").and_then(|hs| hs.as_array())
+                                .map(|hs| hs.iter().any(|inner| {
+                                    inner.get("command").and_then(|c| c.as_str())
+                                        .map(|c| c.contains("ooclaw-codex-hook"))
+                                        .unwrap_or(false)
+                                }))
+                                .unwrap_or(false);
+                            !(cmd_match || nested_match)
+                        });
+                        if arr.is_empty() {
+                            hooks.remove(&name);
+                        }
+                    }
+                }
+            }
+            if let Ok(json_str) = serde_json::to_string_pretty(&config) {
+                let _ = std::fs::write(&hooks_json_path, json_str);
+            }
+        }
+        log::info!("[codex_hooks] codex support disabled on windows; cleaned previously installed hooks");
+        return Ok(());
+    }
+
+    #[cfg(not(windows))]
     std::fs::create_dir_all(&hooks_dir).map_err(|e| e.to_string())?;
 
     #[cfg(unix)]
@@ -10542,6 +10594,50 @@ async fn install_cursor_hooks() -> Result<(), String> {
     let home = dirs::home_dir().ok_or("no home dir")?;
     let cursor_dir = home.join(".cursor");
     let hooks_dir = cursor_dir.join("hooks");
+
+    // Cursor support is dropped on Windows. Instead of installing hooks we
+    // actively clean up anything a previous oc-claw build might have left
+    // behind so the user can really stop hearing the completion sound.
+    #[cfg(windows)]
+    {
+        let _ = std::fs::remove_file(hooks_dir.join("occlaw-cursor-hook.ps1"));
+        let hooks_json_path = cursor_dir.join("hooks.json");
+        if hooks_json_path.exists() {
+            if let Ok(content) = std::fs::read_to_string(&hooks_json_path) {
+                if let Ok(mut config) = serde_json::from_str::<serde_json::Value>(&content) {
+                    if let Some(hooks) = config.get_mut("hooks").and_then(|v| v.as_object_mut()) {
+                        let marker = "occlaw-cursor-hook";
+                        // Strip any oc-claw entry from every event bucket and
+                        // drop now-empty buckets so the file stays tidy.
+                        let event_names: Vec<String> = hooks.keys().cloned().collect();
+                        for name in event_names {
+                            if let Some(arr) = hooks.get_mut(&name).and_then(|v| v.as_array_mut()) {
+                                arr.retain(|entry| {
+                                    !entry.get("command").and_then(|c| c.as_str())
+                                        .map(|c| c.contains(marker))
+                                        .unwrap_or(false)
+                                });
+                                if arr.is_empty() {
+                                    hooks.remove(&name);
+                                }
+                            }
+                        }
+                    }
+                    if let Ok(json_str) = serde_json::to_string_pretty(&config) {
+                        let _ = std::fs::write(&hooks_json_path, json_str);
+                    }
+                }
+            }
+        }
+        let ext_dir = home.join(".cursor").join("extensions").join("oc-claw.terminal-focus-1.0.0");
+        if ext_dir.exists() {
+            let _ = std::fs::remove_dir_all(&ext_dir);
+        }
+        log::info!("[cursor_hooks] cursor support disabled on windows; cleaned previously installed hooks");
+        return Ok(());
+    }
+
+    #[cfg(not(windows))]
     std::fs::create_dir_all(&hooks_dir).map_err(|e| e.to_string())?;
 
     // ── Write hook script (Unix) ──
@@ -11148,6 +11244,22 @@ fn start_claude_socket_server(
                                 }
                             }
                             let text = String::from_utf8_lossy(&buf);
+                            // Cursor + Codex support are dropped on Windows.
+                            // Their hook scripts (or, in cursor's case, the
+                            // bundled Claude Code extension) still occasionally
+                            // reach this socket. Cursor payloads always carry
+                            // `cursor_version`; Codex hooks always set
+                            // `"source":"codex"`. Drop both outright so they
+                            // cannot drive the completion sound or pollute the
+                            // session list.
+                            if text.contains("\"cursor_version\"") {
+                                log::info!("[claude_tcp] dropping cursor-originated event on windows (len={})", text.len());
+                                return;
+                            }
+                            if text.contains("\"source\":\"codex\"") || text.contains("\"source\": \"codex\"") {
+                                log::info!("[claude_tcp] dropping codex-originated event on windows (len={})", text.len());
+                                return;
+                            }
                             if let Some((session_id, hook_event)) = process_claude_event(&text, &state, &app, None) {
                                 if hook_event == "PermissionRequest" {
                                     let (tx, rx) = std::sync::mpsc::channel::<String>();
