@@ -1634,9 +1634,9 @@ async fn scan_characters(app: tauri::AppHandle) -> Result<serde_json::Value, Str
         "localasset://localhost"
     };
     if let Ok(builtin_dir) = builtin_assets_dir(&app) {
-        log::info!("[scan_characters] scanning builtin: {} (exists={})", builtin_dir.display(), builtin_dir.exists());
+        log::debug!("[scan_characters] scanning builtin: {} (exists={})", builtin_dir.display(), builtin_dir.exists());
         scan_dir(&builtin_dir, builtin_prefix, true, &ip_map, &mut results);
-        log::info!("[scan_characters] found {} characters after builtin scan", results.len());
+        log::debug!("[scan_characters] found {} characters after builtin scan", results.len());
     }
 
     // Scan custom assets
@@ -1648,7 +1648,7 @@ async fn scan_characters(app: tauri::AppHandle) -> Result<serde_json::Value, Str
         "customasset://localhost"
     };
     if let Ok(custom_dir) = custom_assets_dir(&app) {
-        log::info!("[scan_characters] scanning custom: {} (exists={})", custom_dir.display(), custom_dir.exists());
+        log::debug!("[scan_characters] scanning custom: {} (exists={})", custom_dir.display(), custom_dir.exists());
         scan_dir(&custom_dir, custom_prefix, false, &ip_map, &mut results);
     }
 
@@ -2974,7 +2974,7 @@ async fn get_agent_extra_info(agent_id: String, mode: Option<String>, ssh_host: 
 
 #[tauri::command]
 async fn open_mini(app: tauri::AppHandle) -> Result<(), String> {
-    log::info!("[mini-pos] open_mini called");
+    log::debug!("[mini-pos] open_mini called");
     if let Some(win) = app.get_webview_window("mini") {
         // Reposition to collapsed position before showing
         #[cfg(target_os = "macos")]
@@ -3018,7 +3018,7 @@ async fn open_mini(app: tauri::AppHandle) -> Result<(), String> {
                         // Pull the window down by MASCOT_TOP_INSET so it
                         // does not sit under the menu bar / notch on launch.
                         let y = sy + sh - win_h - MASCOT_TOP_INSET;
-                        log::info!(
+                        log::debug!(
                             "[mini-pos] open_mini(existing,mac) target frame x={:.1} y={:.1} w={:.1} h={:.1} inset={:.1} screen=({:.1},{:.1},{:.1},{:.1}) notch_off={:.1}",
                             x, y, win_w, win_h, MASCOT_TOP_INSET, sx, sy, sw, sh, notch_off
                         );
@@ -3049,7 +3049,7 @@ async fn open_mini(app: tauri::AppHandle) -> Result<(), String> {
                 let notch_off = (80.0 * ui).round();
                 let x = sw / 2.0 + notch_off;
                 let _ = win.set_size(tauri::LogicalSize::new(win_w, win_h));
-                log::info!(
+                log::debug!(
                     "[mini-pos] open_mini(existing,win) target pos x={:.1} y={:.1} w={:.1} h={:.1} ui={:.2} notch_off={:.1}",
                     x, 0.0, win_w, win_h, ui, notch_off
                 );
@@ -3118,7 +3118,7 @@ async fn open_mini(app: tauri::AppHandle) -> Result<(), String> {
                     // Pull the window down by MASCOT_TOP_INSET so the sprite
                     // is fully visible below the menu bar / notch on launch.
                     let y = sy + sh - win_h - MASCOT_TOP_INSET;
-                    log::info!(
+                    log::debug!(
                         "[mini-pos] open_mini(new,mac) target frame x={:.1} y={:.1} w={:.1} h={:.1} inset={:.1} screen=({:.1},{:.1},{:.1},{:.1}) notch_off={:.1}",
                         x, y, win_w, win_h, MASCOT_TOP_INSET, sx, sy, sw, sh, notch_off
                     );
@@ -3151,7 +3151,7 @@ async fn open_mini(app: tauri::AppHandle) -> Result<(), String> {
             let notch_off = (80.0 * ui).round();
             let x = sw / 2.0 + notch_off;
             let _ = win.set_size(tauri::LogicalSize::new(win_w, win_h));
-            log::info!(
+            log::debug!(
                 "[mini-pos] open_mini(new,win) target pos x={:.1} y={:.1} w={:.1} h={:.1} ui={:.2} notch_off={:.1}",
                 x, 0.0, win_w, win_h, ui, notch_off
             );
@@ -3480,7 +3480,7 @@ async fn set_mini_origin(
     confine: Option<bool>,
 ) -> Result<(), String> {
     let confine = confine.unwrap_or(true);
-    log::info!(
+    log::debug!(
         "[mini-pos] set_mini_origin request x={:.1} y={:.1} confine={}",
         x, y, confine
     );
@@ -3521,13 +3521,13 @@ async fn set_mini_origin(
                     let max_y = (screen_frame.origin.y + screen_frame.size.height - frame.size.height - MASCOT_TOP_INSET).max(min_y);
                     let cx = x.max(min_x).min(max_x);
                     let cy = y.max(min_y).min(max_y);
-                    log::info!(
+                    log::debug!(
                         "[mini-pos] set_mini_origin(mac) clamped x={:.1}->{:.1} y={:.1}->{:.1} bounds x[{:.1},{:.1}] y[{:.1},{:.1}]",
                         x, cx, y, cy, min_x, max_x, min_y, max_y
                     );
                     (cx, cy)
                 } else {
-                    log::info!(
+                    log::debug!(
                         "[mini-pos] set_mini_origin(mac) unconfined x={:.1} y={:.1}",
                         x, y
                     );
@@ -3549,7 +3549,7 @@ async fn set_mini_origin(
     #[cfg(target_os = "windows")]
     {
         if !confine {
-            log::info!(
+            log::debug!(
                 "[mini-pos] set_mini_origin(win) unconfined x={:.1} y={:.1}",
                 x, y
             );
@@ -3574,13 +3574,13 @@ async fn set_mini_origin(
             let max_y = (my + sh - wh).max(min_y);
             let clamped_x = x.max(min_x).min(max_x);
             let clamped_y = y.max(min_y).min(max_y);
-            log::info!(
+            log::debug!(
                 "[mini-pos] set_mini_origin(win) clamped x={:.1}->{:.1} y={:.1}->{:.1} bounds x[{:.1},{:.1}] y[{:.1},{:.1}]",
                 x, clamped_x, y, clamped_y, min_x, max_x, min_y, max_y
             );
             let _ = win.set_position(tauri::LogicalPosition::new(clamped_x, clamped_y));
         } else {
-            log::info!(
+            log::debug!(
                 "[mini-pos] set_mini_origin(win,fallback) apply x={:.1} y={:.1} (with inset)",
                 x, y + MASCOT_TOP_INSET
             );
@@ -3605,7 +3605,7 @@ async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Opti
     let pos = position.unwrap_or_else(|| "right".to_string());
     let mascot_scale = sanitized_mascot_scale(mascot_scale);
     let large_mascot_scale = large_mascot_scale.unwrap_or(LARGE_MASCOT_SIZE_MULTIPLIER);
-    log::info!(
+    log::debug!(
         "[mini-pos] set_mini_expanded request expanded={} pos={} efficiency={:?} keep_position={:?} large_mascot={:?} mascot_scale={:.2} large_scale={:.2}",
         expanded, pos, efficiency, keep_position, large_mascot, mascot_scale, large_mascot_scale
     );
@@ -3659,7 +3659,7 @@ async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Opti
                         // MASCOT_TOP_INSET only applies to the collapsed mascot
                         // so it stays clear of the notch.
                         let y = sy + sh - win_h;
-                        log::info!(
+                        log::debug!(
                             "[mini-pos] set_mini_expanded(mac,expanded) frame x={:.1} y={:.1} w={:.1} h={:.1}",
                             x, y, win_w, win_h
                         );
@@ -3696,7 +3696,7 @@ async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Opti
                             let max_y = sy + sh - win_h - MASCOT_TOP_INSET;
                             if y > max_y { y = max_y; }
                         }
-                        log::info!(
+                        log::debug!(
                             "[mini-pos] set_mini_expanded(mac,collapsed) frame x={:.1} y={:.1} w={:.1} h={:.1} keep_position={}",
                             x, y, win_w, win_h, keep_position.unwrap_or(false)
                         );
@@ -3734,7 +3734,7 @@ async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Opti
                 // Expanded panel hugs the top of the monitor (no inset) so it
                 // does not get pushed below the IDE chrome.
                 let y = my;
-                log::info!(
+                log::debug!(
                     "[mini-pos] set_mini_expanded(win,expanded) frame x={:.1} y={:.1} w={:.1} h={:.1} ui={:.2}",
                     x, y, win_w, win_h, ui
                 );
@@ -3761,7 +3761,7 @@ async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Opti
                         let notch_off = (80.0 * ui).round();
                         let x = mx + if pos == "left" { sw / 2.0 - notch_off - win_w } else { sw / 2.0 + notch_off };
                         let y = my + (MASCOT_TOP_INSET * ui).round();
-                        log::info!(
+                        log::debug!(
                             "[mini-pos] set_mini_expanded(win,collapsed) frame x={:.1} y={:.1} w={:.1} h={:.1} keep_position={}",
                             x, y, win_w, win_h, keep_position.unwrap_or(false)
                         );
@@ -4123,7 +4123,7 @@ async fn resize_mini_height(app: tauri::AppHandle, height: f64, max_height: Opti
                     NSPoint::new(cur.origin.x, new_y),
                     NSSize::new(cur.size.width, capped_h),
                 );
-                log::info!(
+                log::debug!(
                     "[mini-pos] resize_mini_height(mac) frame x={:.1} y={:.1} w={:.1} h={:.1}",
                     cur.origin.x, new_y, cur.size.width, capped_h
                 );
@@ -6653,9 +6653,11 @@ pub struct ClaudeSession {
     /// of relying on CWD/title matching which is ambiguous.
     #[serde(skip)]
     pub terminal_id: Option<String>,
-    /// Host terminal app name (e.g. "Ghostty", "Cursor", "iTerm2").
-    /// Captured once at session creation via process chain walk.
-    #[serde(skip)]
+    /// Host terminal app name (e.g. "Ghostty", "Cursor", "iTerm2", "Claude Desktop").
+    /// Captured once at session creation via process chain walk or from the
+    /// hook script's `host` tag. Exposed to the frontend so it can distinguish
+    /// CC CLI sessions from CC Desktop sessions and gate them independently.
+    #[serde(rename = "hostTerminal", skip_serializing_if = "Option::is_none")]
     pub host_terminal: Option<String>,
     /// Bound Cursor extension port for this session.
     /// Unlike `pid`, this is stable for the lifetime of a Cursor window.
@@ -7140,9 +7142,10 @@ async fn get_claude_sessions(state: tauri::State<'_, ClaudeState>) -> Result<Vec
                 "waiting" | "processing" | "tool_running" | "compacting");
             if !dominated { continue; }
 
-            if session.source == "cursor" || session.source == "codex" {
-                // Cursor/Codex: timeout-based staleness (120s without any event update).
-                // Hook PPIDs are not always stable enough for PID-alive checks.
+            let is_desktop_hosted = session.host_terminal.as_deref() == Some("Claude Desktop");
+            if session.source == "cursor" || session.source == "codex" || is_desktop_hosted {
+                // Cursor/Codex/CC Desktop: timeout-based staleness (120s without any event update).
+                // Hook PIDs are not stable enough for PID-alive checks in these environments.
                 let age_ms = now_ms.saturating_sub(session.updated_at);
                 if age_ms > 120_000 {
                     log::info!(
@@ -7309,8 +7312,23 @@ async fn resolve_claude_permission(
     };
 
     if let Some(tx) = tx {
+        if cfg!(debug_assertions) {
+            log::info!(
+                "[resolve_permission] sending decision='{}' tool={:?} session={} response_json={}",
+                decision,
+                tool_name,
+                &session_id[..session_id.len().min(8)],
+                response_json,
+            );
+        } else {
+            log::info!(
+                "[resolve_permission] sent '{}' tool={:?} for session={}",
+                decision,
+                tool_name,
+                &session_id[..session_id.len().min(8)],
+            );
+        }
         tx.send(response_json).map_err(|_| "Failed to send permission response".to_string())?;
-        log::info!("[resolve_permission] sent '{}' for session={}", decision, &session_id[..session_id.len().min(8)]);
     } else {
         log::warn!("[resolve_permission] no pending permission for session={}", &session_id[..session_id.len().min(8)]);
     }
@@ -7742,7 +7760,12 @@ async fn list_custom_codex_pets() -> Result<Vec<CodexPetMeta>, String> {
 /// modal/blur/exit paths doesn't require opening webview DevTools.
 #[tauri::command]
 async fn debug_log(scope: String, msg: String) -> Result<(), String> {
-    log::info!("[fe:{}] {}", scope, msg);
+    // Diagnostic-only: keep frontend state/poll/mascot trace lines in debug
+    // builds where they help pinpoint UI bugs, drop them in release builds
+    // so the log file stays focused on real events.
+    if cfg!(debug_assertions) {
+        log::info!("[fe:{}] {}", scope, msg);
+    }
     Ok(())
 }
 
@@ -8466,6 +8489,225 @@ async fn request_ax_permission() -> Result<(), String> {
     Ok(())
 }
 
+/// Walk parent process chain on Windows to find CC Desktop (claude.exe in WindowsApps).
+/// Returns the PID of the CC Desktop main process if the given PID is a descendant of it.
+#[cfg(target_os = "windows")]
+fn find_claude_desktop_parent_pid(pid: u32) -> Option<u32> {
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+    };
+    use windows::Win32::System::Threading::{OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_FORMAT, PROCESS_QUERY_LIMITED_INFORMATION};
+    use windows::Win32::Foundation::{CloseHandle, MAX_PATH};
+
+    // Take a snapshot of all processes to walk the parent chain
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0).ok()? };
+    let mut entries: Vec<(u32, u32)> = Vec::new(); // (pid, parent_pid)
+    let mut entry = PROCESSENTRY32W {
+        dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+        ..Default::default()
+    };
+    unsafe {
+        if Process32FirstW(snapshot, &mut entry).is_ok() {
+            entries.push((entry.th32ProcessID, entry.th32ParentProcessID));
+            while Process32NextW(snapshot, &mut entry).is_ok() {
+                entries.push((entry.th32ProcessID, entry.th32ParentProcessID));
+            }
+        }
+        let _ = CloseHandle(snapshot);
+    }
+
+    // Walk up the parent chain from the given PID (max 10 hops).
+    // Only match claude.exe in WindowsApps (the GUI Electron app with a window).
+    // claude-3p\claude-code\...\claude.exe is the headless CLI — skip it.
+    let mut current = pid;
+    for _ in 0..10 {
+        let parent = entries.iter().find(|(p, _)| *p == current).map(|(_, pp)| *pp)?;
+        if parent == 0 || parent == current {
+            return None;
+        }
+        if let Some(exe_path) = get_process_exe_path(parent) {
+            let exe_lower = exe_path.to_lowercase();
+            if (exe_lower.ends_with("\\claude.exe") || exe_lower.ends_with("/claude.exe"))
+                && exe_lower.contains("windowsapps")
+            {
+                return Some(parent);
+            }
+        }
+        current = parent;
+    }
+    None
+}
+
+/// Get the full exe path for a process on Windows.
+#[cfg(target_os = "windows")]
+fn get_process_exe_path(pid: u32) -> Option<String> {
+    use windows::Win32::System::Threading::{OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_FORMAT, PROCESS_QUERY_LIMITED_INFORMATION};
+    use windows::Win32::Foundation::{CloseHandle, MAX_PATH};
+
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+        let mut buf = [0u16; MAX_PATH as usize];
+        let mut size: u32 = buf.len() as u32;
+        let result = QueryFullProcessImageNameW(
+            handle,
+            PROCESS_NAME_FORMAT(0),
+            windows::core::PWSTR(buf.as_mut_ptr()),
+            &mut size,
+        );
+        let _ = CloseHandle(handle);
+        if result.is_ok() {
+            Some(String::from_utf16_lossy(&buf[..size as usize]))
+        } else {
+            None
+        }
+    }
+}
+
+/// Activate a window by its owning process PID on Windows.
+/// Finds visible top-level windows owned by the given PID and brings the best one to front.
+#[cfg(target_os = "windows")]
+fn activate_window_by_pid(target_pid: u32) {
+    use windows::Win32::Foundation::{BOOL, HWND, LPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        EnumWindows, GetWindowTextLengthW, GetWindowThreadProcessId,
+        IsIconic, IsWindowVisible, SetForegroundWindow, ShowWindowAsync, SW_RESTORE,
+    };
+
+    struct EnumCtx {
+        target_pid: u32,
+        best_hwnd: Option<isize>,
+        best_title_len: i32,
+    }
+
+    extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        unsafe {
+            let ctx = &mut *(lparam.0 as *mut EnumCtx);
+            if !IsWindowVisible(hwnd).as_bool() {
+                return BOOL(1);
+            }
+            let mut pid: u32 = 0;
+            GetWindowThreadProcessId(hwnd, Some(&mut pid));
+            if pid != ctx.target_pid {
+                return BOOL(1);
+            }
+            let title_len = GetWindowTextLengthW(hwnd);
+            if title_len > ctx.best_title_len {
+                ctx.best_title_len = title_len;
+                ctx.best_hwnd = Some(hwnd.0 as isize);
+            }
+            BOOL(1)
+        }
+    }
+
+    let mut ctx = EnumCtx {
+        target_pid,
+        best_hwnd: None,
+        best_title_len: -1,
+    };
+    unsafe {
+        let _ = EnumWindows(Some(enum_proc), LPARAM(&mut ctx as *mut EnumCtx as isize));
+    }
+    if let Some(hwnd_val) = ctx.best_hwnd {
+        unsafe {
+            let hwnd = HWND(hwnd_val as *mut std::ffi::c_void);
+            if IsIconic(hwnd).as_bool() {
+                let _ = ShowWindowAsync(hwnd, SW_RESTORE);
+            }
+            let _ = SetForegroundWindow(hwnd);
+        }
+    }
+}
+
+/// Find any running CC Desktop main process (WindowsApps\...\Claude.exe).
+/// Used as fallback when hook didn't capture a PID.
+#[cfg(target_os = "windows")]
+fn find_running_claude_desktop_pid() -> Option<u32> {
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+    };
+    use windows::Win32::Foundation::CloseHandle;
+
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0).ok()? };
+    let mut entry = PROCESSENTRY32W {
+        dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+        ..Default::default()
+    };
+    let mut result = None;
+    unsafe {
+        if Process32FirstW(snapshot, &mut entry).is_ok() {
+            loop {
+                let exe_name = String::from_utf16_lossy(
+                    &entry.szExeFile[..entry.szExeFile.iter().position(|&c| c == 0).unwrap_or(entry.szExeFile.len())]
+                ).to_lowercase();
+                if exe_name == "claude.exe" {
+                    // Verify it's the WindowsApps GUI process, not the CLI
+                    if let Some(path) = get_process_exe_path(entry.th32ProcessID) {
+                        if path.to_lowercase().contains("windowsapps") {
+                            result = Some(entry.th32ProcessID);
+                            break;
+                        }
+                    }
+                }
+                if Process32NextW(snapshot, &mut entry).is_err() {
+                    break;
+                }
+            }
+        }
+        let _ = CloseHandle(snapshot);
+    }
+    result
+}
+
+/// Detect the host application for a CC process on Windows.
+/// Returns a name like "Claude Desktop", "Windows Terminal", etc.
+#[cfg(target_os = "windows")]
+fn find_host_app_for_pid_win(pid: u32) -> Option<String> {
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+    };
+    use windows::Win32::Foundation::CloseHandle;
+
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0).ok()? };
+    let mut entries: Vec<(u32, u32)> = Vec::new();
+    let mut entry = PROCESSENTRY32W {
+        dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+        ..Default::default()
+    };
+    unsafe {
+        if Process32FirstW(snapshot, &mut entry).is_ok() {
+            entries.push((entry.th32ProcessID, entry.th32ParentProcessID));
+            while Process32NextW(snapshot, &mut entry).is_ok() {
+                entries.push((entry.th32ProcessID, entry.th32ParentProcessID));
+            }
+        }
+        let _ = CloseHandle(snapshot);
+    }
+
+    let mut current = pid;
+    for _ in 0..10 {
+        let parent = entries.iter().find(|(p, _)| *p == current).map(|(_, pp)| *pp)?;
+        if parent == 0 || parent == current {
+            return None;
+        }
+        if let Some(exe_path) = get_process_exe_path(parent) {
+            let exe_lower = exe_path.to_lowercase();
+            if (exe_lower.ends_with("\\claude.exe") || exe_lower.ends_with("/claude.exe"))
+                && exe_lower.contains("windowsapps")
+            {
+                return Some("Claude Desktop".to_string());
+            }
+            if exe_lower.ends_with("\\windowsterminal.exe") {
+                return Some("Windows Terminal".to_string());
+            }
+            if exe_lower.ends_with("\\ghostty.exe") {
+                return Some("Ghostty".to_string());
+            }
+        }
+        current = parent;
+    }
+    None
+}
+
 /// Bring a Cursor window to front on Windows by enumerating top-level windows,
 /// finding ones owned by `Cursor.exe`, and selecting the one whose title
 /// contains the workspace name. Cursor window titles look like
@@ -8744,6 +8986,7 @@ async fn jump_to_claude_terminal(session_id: String, state: tauri::State<'_, Cla
     let terminal_id = session.terminal_id.clone();
     let pid = session.pid;
     let source = session.source.clone();
+    let host_terminal = session.host_terminal.clone();
     drop(sessions);
 
     #[cfg(target_os = "macos")]
@@ -9091,11 +9334,28 @@ end tell"#,
         }
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
     {
-        // On Windows/Linux, try to open the working directory
+        let is_desktop = host_terminal.as_deref() == Some("Claude Desktop");
+        if is_desktop {
+            if let Some(cc_pid) = pid {
+                if let Some(desktop_pid) = find_claude_desktop_parent_pid(cc_pid) {
+                    activate_window_by_pid(desktop_pid);
+                    return Ok("Activated Claude Desktop window".to_string());
+                }
+            }
+            if let Some(desktop_pid) = find_running_claude_desktop_pid() {
+                activate_window_by_pid(desktop_pid);
+                return Ok("Activated Claude Desktop window".to_string());
+            }
+        }
+        Ok("No action".to_string())
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
         if !cwd.is_empty() {
-            let _ = std::process::Command::new("open").arg(&cwd).spawn();
+            let _ = std::process::Command::new("xdg-open").arg(&cwd).spawn();
         }
         Ok("Opened working directory".to_string())
     }
@@ -9897,9 +10157,39 @@ except:
 try {
     $raw = [Console]::In.ReadToEnd()
     if ([string]::IsNullOrWhiteSpace($raw)) { exit 0 }
-    $ccPid = (Get-Process -Id $PID).Parent.Parent.Id
-    if ($ccPid -and $raw.StartsWith('{')) {
-        $raw = '{"pid":' + $ccPid + ',' + $raw.Substring(1)
+    # Walk the parent chain to detect CC Desktop and capture the CC CLI PID.
+    # The hook is invoked as: powershell <- bash <- claude.exe (CLI) <- [optional] claude.exe (Electron desktop in WindowsApps).
+    # CC Desktop bundles its CLI under a `claude-3p\claude-code` directory,
+    # and the desktop Electron app lives in `WindowsApps\...\claude.exe`.
+    # We treat either marker as 'desktop'. The first claude.exe encountered
+    # going upward is the CC CLI process; its PID lets oc-claw run PID-alive
+    # checks (and a deeper parent walk via Win32) to clear stale sessions.
+    $ccDesktop = $false
+    $ccPid = 0
+    try {
+        $current = $PID
+        for ($i = 0; $i -lt 10; $i++) {
+            $proc = Get-CimInstance Win32_Process -Filter "ProcessId=$current"
+            if (-not $proc) { break }
+            $parentId = $proc.ParentProcessId
+            if (-not $parentId -or $parentId -eq 0 -or $parentId -eq $current) { break }
+            $parent = Get-CimInstance Win32_Process -Filter "ProcessId=$parentId"
+            if (-not $parent) { break }
+            $exe = ''
+            if ($parent.ExecutablePath) { $exe = $parent.ExecutablePath.ToLower() }
+            if ($exe) {
+                if ($exe.Contains('claude-3p')) { $ccDesktop = $true }
+                if ($exe.Contains('windowsapps') -and $exe.EndsWith('\claude.exe')) { $ccDesktop = $true }
+                if ($ccPid -eq 0 -and $exe.EndsWith('\claude.exe')) { $ccPid = [int]$parent.ProcessId }
+            }
+            $current = $parentId
+        }
+    } catch {}
+    if ($raw.StartsWith('{')) {
+        $prefix = '{'
+        if ($ccPid -ne 0) { $prefix += '"pid":' + $ccPid + ',' }
+        if ($ccDesktop) { $prefix += '"host":"claude_desktop",' }
+        if ($prefix.Length -gt 1) { $raw = $prefix + $raw.Substring(1) }
     }
     $isPermission = $raw -match '"hook_event_name"\s*:\s*"PermissionRequest"'
     $client = [System.Net.Sockets.TcpClient]::new('127.0.0.1', 19283)
@@ -10176,7 +10466,7 @@ try {
     $obj = $null
     try { $obj = $raw | ConvertFrom-Json } catch {}
     if ($obj -ne $null) {
-        $ccPid = (Get-Process -Id $PID).Parent.Parent.Id
+        $ccPid = $null; try { $cur = $PID; for ($i = 0; $i -lt 8; $i++) { $p = Get-CimInstance Win32_Process -Filter "ProcessId=$cur"; if (-not $p) { break }; $cur = $p.ParentProcessId; if ($cur -le 0) { break }; $pp = Get-CimInstance Win32_Process -Filter "ProcessId=$cur"; if ($pp -and $pp.Name -eq 'claude.exe' -and $pp.ExecutablePath -and $pp.ExecutablePath.ToLower().Contains('windowsapps')) { $ccPid = $cur; break } } } catch {}
         if (-not $obj.source) { $obj.source = 'codex' }
         if ($ccPid -and -not $obj.pid) { $obj | Add-Member -NotePropertyName pid -NotePropertyValue $ccPid -Force }
         if (-not $obj.hook_event_name -and $obj.codex_event_type) { $obj.hook_event_name = $obj.codex_event_type }
@@ -10422,7 +10712,20 @@ fn process_claude_event(
     app: &tauri::AppHandle,
     source_override: Option<&str>,
 ) -> Option<(String, String)> {
-    log::info!("[claude_event] raw buf len={} content={}", buf.len(), &buf[..buf.len().min(500)]);
+    // Char-boundary-safe truncation for the diagnostic log. Plain byte slicing
+    // (`&buf[..500]`) panics if byte 500 lands inside a multi-byte UTF-8 char,
+    // which is guaranteed for any CC Desktop Stop event whose `last_assistant_message`
+    // contains CJK characters (e.g. AI reply "我为你创建了 xxx.html"). The panic
+    // killed the per-connection handler thread before status could transition
+    // to "stopped", leaving the session stuck in `processing` for 120s until
+    // the stale-detection fallback fired.
+    let preview_end = buf
+        .char_indices()
+        .map(|(i, c)| i + c.len_utf8())
+        .take_while(|&end| end <= 500)
+        .last()
+        .unwrap_or(0);
+    log::info!("[claude_event] raw buf len={} content={}", buf.len(), &buf[..preview_end]);
     // Defensive: strip a leading UTF-8 BOM (U+FEFF) plus any whitespace.
     // Cursor on Windows emits hook stdin with a BOM and the hook script may
     // forward it raw; serde_json refuses BOM with "expected value at column 1".
@@ -10537,9 +10840,7 @@ fn process_claude_event(
             "SubagentStop" => "processing".to_string(),
             "SessionEnd" => "ended".to_string(),
             "PermissionRequest" => "waiting".to_string(),
-            "SessionStart" => {
-                if is_processing { "processing".to_string() } else { "stopped".to_string() }
-            }
+            "SessionStart" => "stopped".to_string(),
             _ => {
                 if !is_processing { "stopped".to_string() } else { claude_status.clone() }
             }
@@ -10564,6 +10865,7 @@ fn process_claude_event(
         let was_compacting;
         let pending_agents;
         let session_source: String;
+        let session_host_terminal: Option<String>;
         let stop_was_interrupted;
 
         {
@@ -10573,7 +10875,9 @@ fn process_claude_event(
             was_compacting = prev_status == "compacting";
 
             if hook_event == "SessionEnd" {
-                session_source = sessions.get(&session_id).map(|s| s.source.clone()).unwrap_or_else(|| "cc".to_string());
+                let prev = sessions.get(&session_id);
+                session_source = prev.map(|s| s.source.clone()).unwrap_or_else(|| "cc".to_string());
+                session_host_terminal = prev.and_then(|s| s.host_terminal.clone());
                 sessions.remove(&session_id);
                 pending_agents = 0;
                 stop_was_interrupted = false;
@@ -10749,6 +11053,25 @@ fn process_claude_event(
                             session.source = "codex".to_string();
                         }
                     }
+                    #[cfg(target_os = "windows")]
+                    if session.host_terminal.is_none() && session.source != "cursor" {
+                        session.host_terminal = find_host_app_for_pid_win(pid_u32);
+                        log::info!("[claude_event] session={} host_terminal={:?}",
+                            &session_id[..session_id.len().min(8)], session.host_terminal);
+                    }
+                }
+
+                // Read "host" field injected by the hook script (e.g. "claude_desktop")
+                if session.host_terminal.is_none() {
+                    if let Some(host) = event.get("host").and_then(|v| v.as_str()) {
+                        let ht = match host {
+                            "claude_desktop" => "Claude Desktop",
+                            _ => host,
+                        };
+                        session.host_terminal = Some(ht.to_string());
+                        log::info!("[claude_event] session={} host_terminal={:?} (from hook host field)",
+                            &session_id[..session_id.len().min(8)], session.host_terminal);
+                    }
                 }
 
                 // Store Ghostty terminal ID from hook event for precise tab jumping.
@@ -10853,6 +11176,7 @@ fn process_claude_event(
 
                 pending_agents = session.pending_agents;
                 session_source = session.source.clone();
+                session_host_terminal = session.host_terminal.clone();
             }
         }
 
@@ -10870,7 +11194,21 @@ fn process_claude_event(
         if was_processing && !was_compacting
             && (is_completion_stop || is_wait_event) {
             let is_waiting = is_wait_event;
-            let _ = app.emit("claude-task-complete", serde_json::json!({"sessionId": session_id, "waiting": is_waiting, "source": session_source}));
+            if cfg!(debug_assertions) {
+                log::info!(
+                    "[claude_event] emit claude-task-complete session={} waiting={} source={} host={:?}",
+                    &session_id[..session_id.len().min(8)],
+                    is_waiting,
+                    session_source,
+                    session_host_terminal,
+                );
+            }
+            let _ = app.emit("claude-task-complete", serde_json::json!({
+                "sessionId": session_id,
+                "waiting": is_waiting,
+                "source": session_source,
+                "hostTerminal": session_host_terminal,
+            }));
         }
 
         let cwd_str = event.get("cwd")
@@ -11589,8 +11927,26 @@ fn start_claude_socket_server(
                                     s.set_read_timeout(None).ok();
                                     match rx.recv_timeout(std::time::Duration::from_secs(600)) {
                                         Ok(response_json) => {
-                                            let _ = s.write_all(response_json.as_bytes());
-                                            let _ = s.flush();
+                                            let bytes = response_json.as_bytes();
+                                            let write_result = s.write_all(bytes);
+                                            let flush_result = s.flush();
+                                            // Only emit a log line if anything looked off — successful
+                                            // permission round-trips are silent in release to avoid noise.
+                                            if write_result.is_err() || flush_result.is_err() {
+                                                log::warn!(
+                                                    "[claude_tcp] permission response write failed session={} bytes={} write_ok={} flush_ok={}",
+                                                    &session_id[..session_id.len().min(8)],
+                                                    bytes.len(),
+                                                    write_result.is_ok(),
+                                                    flush_result.is_ok(),
+                                                );
+                                            } else if cfg!(debug_assertions) {
+                                                log::info!(
+                                                    "[claude_tcp] permission response written session={} bytes={}",
+                                                    &session_id[..session_id.len().min(8)],
+                                                    bytes.len(),
+                                                );
+                                            }
                                         }
                                         Err(_) => {
                                             log::warn!("[claude_tcp] permission timeout for session={}", &session_id[..session_id.len().min(8)]);
@@ -11860,9 +12216,24 @@ pub fn run() {
                 log::warn!("Failed to install Cursor hooks on startup: {}", e);
             }
 
+            // One log file per app run, named with a startup timestamp so we
+            // never lose the previous session's logs to rotation. Goes to the
+            // OS-standard logs dir alongside the rolling `oc-claw.log` (which
+            // tauri-plugin-log keeps as its default LogDir target).
+            // On Windows: %LOCALAPPDATA%\com.openclaw.ooclaw\logs\run-*.log
+            let run_log_name = format!(
+                "run-{}.log",
+                chrono::Local::now().format("%Y-%m-%d_%H-%M-%S")
+            );
             app.handle().plugin(
                 tauri_plugin_log::Builder::default()
                     .level(log::LevelFilter::Info)
+                    .max_file_size(64 * 1024 * 1024)
+                    .target(tauri_plugin_log::Target::new(
+                        tauri_plugin_log::TargetKind::LogDir {
+                            file_name: Some(run_log_name),
+                        },
+                    ))
                     .build(),
             )?;
 

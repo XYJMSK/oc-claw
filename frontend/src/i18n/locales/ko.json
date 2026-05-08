@@ -100,6 +100,10 @@
     "claudeCode": "Claude Code",
     "enableClaudeCode": "Claude Code 활성화",
     "enableClaudeCodeDesc": "Hook으로 로컬 Claude Code 세션 모니터링",
+    "enableClaudeCli": "Claude Code CLI 활성화",
+    "enableClaudeCliDesc": "Hook으로 로컬 Claude Code CLI 세션 모니터링",
+    "enableClaudeDesktop": "Claude Code Desktop 활성화",
+    "enableClaudeDesktopDesc": "Hook으로 로컬 Claude Code Desktop 세션 모니터링",
     "hookInstalled": "Hook 설치됨",
     "hookFailed": "설치 실패:",
 

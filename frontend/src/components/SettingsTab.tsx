@@ -237,6 +237,8 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
   const [connections, setConnections] = useState<OcConnection[]>([])
   const [enableClaudeCode, setEnableClaudeCode] = useState(true)
   const [hookStatus, setHookStatus] = useState('')
+  const [enableClaudeDesktop, setEnableClaudeDesktop] = useState(true)
+  const [claudeDesktopHookStatus, setClaudeDesktopHookStatus] = useState('')
   const [enableCodex, setEnableCodex] = useState(!isWindowsPlatform)
   const [codexHookStatus, setCodexHookStatus] = useState('')
   const [enableCursor, setEnableCursor] = useState(true)
@@ -297,6 +299,8 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
       const store = await getStore()
       const cc = await store.get('enable_claudecode')
       if (typeof cc === 'boolean') setEnableClaudeCode(cc)
+      const ccDesktop = await store.get('enable_claude_desktop')
+      if (typeof ccDesktop === 'boolean') setEnableClaudeDesktop(ccDesktop)
       const cod = await store.get('enable_codex')
       if (isWindowsPlatform) {
         setEnableCodex(false)
@@ -437,6 +441,25 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
         setHookStatus(t('settings.hookInstalled'))
       } catch (e: any) {
         setHookStatus(`${t('settings.hookFailed')} ${String(e)}`)
+      }
+    }
+  }
+
+  // CC Desktop shares the same on-disk hook script as CC CLI — toggling the
+  // listener purely gates UI visibility and notifications. We still call
+  // install_claude_hooks on enable so a fresh install (CLI off, Desktop on)
+  // registers the hook script.
+  const toggleClaudeDesktop = async (val: boolean) => {
+    setEnableClaudeDesktop(val)
+    const store = await getStore()
+    await store.set('enable_claude_desktop', val)
+    await store.save()
+    if (val) {
+      try {
+        await invoke('install_claude_hooks')
+        setClaudeDesktopHookStatus(t('settings.hookInstalled'))
+      } catch (e: any) {
+        setClaudeDesktopHookStatus(`${t('settings.hookFailed')} ${String(e)}`)
       }
     }
   }
@@ -628,14 +651,35 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
       <section className="flex flex-col gap-4">
         <h2 className="text-lg font-medium text-white">Claude Code</h2>
         <div className="bg-[#0f0f0f] border border-white/5 rounded-2xl overflow-hidden">
-          <div className="flex items-center justify-between p-4">
-            <div className="flex flex-col gap-1">
-              <span className="text-sm font-medium text-white/90">{t('settings.enableClaudeCode')}</span>
-              <span className="text-xs text-white/40">{t('settings.enableClaudeCodeDesc')}</span>
-              {hookStatus && <span className="text-xs text-white/30 mt-1">{hookStatus}</span>}
+          {isWindowsPlatform ? (
+            <>
+              <div className="flex items-center justify-between p-4 border-b border-white/5">
+                <div className="flex flex-col gap-1">
+                  <span className="text-sm font-medium text-white/90">{t('settings.enableClaudeCli', 'Enable Claude Code CLI')}</span>
+                  <span className="text-xs text-white/40">{t('settings.enableClaudeCliDesc', 'Monitor local Claude Code CLI sessions via Hooks')}</span>
+                  {hookStatus && <span className="text-xs text-white/30 mt-1">{hookStatus}</span>}
+                </div>
+                <Toggle checked={enableClaudeCode} onChange={toggleClaudeCode} />
+              </div>
+              <div className="flex items-center justify-between p-4">
+                <div className="flex flex-col gap-1">
+                  <span className="text-sm font-medium text-white/90">{t('settings.enableClaudeDesktop', 'Enable Claude Code Desktop')}</span>
+                  <span className="text-xs text-white/40">{t('settings.enableClaudeDesktopDesc', 'Monitor local Claude Code Desktop sessions via Hooks')}</span>
+                  {claudeDesktopHookStatus && <span className="text-xs text-white/30 mt-1">{claudeDesktopHookStatus}</span>}
+                </div>
+                <Toggle checked={enableClaudeDesktop} onChange={toggleClaudeDesktop} />
+              </div>
+            </>
+          ) : (
+            <div className="flex items-center justify-between p-4">
+              <div className="flex flex-col gap-1">
+                <span className="text-sm font-medium text-white/90">{t('settings.enableClaudeCode')}</span>
+                <span className="text-xs text-white/40">{t('settings.enableClaudeCodeDesc')}</span>
+                {hookStatus && <span className="text-xs text-white/30 mt-1">{hookStatus}</span>}
+              </div>
+              <Toggle checked={enableClaudeCode} onChange={toggleClaudeCode} />
             </div>
-            <Toggle checked={enableClaudeCode} onChange={toggleClaudeCode} />
-          </div>
+          )}
         </div>
       </section>
 

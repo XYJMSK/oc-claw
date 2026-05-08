@@ -100,6 +100,10 @@
     "claudeCode": "Claude Code",
     "enableClaudeCode": "Activer Claude Code",
     "enableClaudeCodeDesc": "Surveiller les sessions Claude Code locales via Hooks",
+    "enableClaudeCli": "Activer Claude Code CLI",
+    "enableClaudeCliDesc": "Surveiller les sessions Claude Code CLI locales via Hooks",
+    "enableClaudeDesktop": "Activer Claude Code Desktop",
+    "enableClaudeDesktopDesc": "Surveiller les sessions Claude Code Desktop locales via Hooks",
     "hookInstalled": "Hook installé",
     "hookFailed": "Échec de l'installation :",
 

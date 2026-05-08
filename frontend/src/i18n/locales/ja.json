@@ -100,6 +100,10 @@
     "claudeCode": "Claude Code",
     "enableClaudeCode": "Claude Codeを有効化",
     "enableClaudeCodeDesc": "Hookでローカルの Claude Code セッションを監視",
+    "enableClaudeCli": "Claude Code CLI を有効化",
+    "enableClaudeCliDesc": "Hook でローカルの Claude Code CLI セッションを監視",
+    "enableClaudeDesktop": "Claude Code Desktop を有効化",
+    "enableClaudeDesktopDesc": "Hook でローカルの Claude Code Desktop セッションを監視",
     "hookInstalled": "Hook インストール済み",
     "hookFailed": "インストール失敗:",
 
