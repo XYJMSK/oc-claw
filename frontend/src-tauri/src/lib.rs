@@ -7117,6 +7117,11 @@ fn frontmost_matches_host_terminal(frontmost: &str, host_terminal: &str) -> bool
     if host_terminal == "Apple_Terminal" && frontmost == "Terminal" {
         return true;
     }
+    // Claude Code Desktop's macOS bundle short name is "Claude" while the
+    // host_terminal we tag is "Claude Desktop" (matches the Windows label).
+    if host_terminal == "Claude Desktop" && frontmost.eq_ignore_ascii_case("Claude") {
+        return true;
+    }
     false
 }
 
@@ -9021,6 +9026,29 @@ async fn jump_to_claude_terminal(session_id: String, state: tauri::State<'_, Cla
             // continue with terminal-based fallback paths below.
         }
 
+        // CC Desktop sessions must short-circuit before the Ghostty fast path.
+        // The unix hook script unconditionally captures Ghostty's current
+        // front-tab id whenever Ghostty is running (it predates CC Desktop
+        // support and assumed CC always lives inside a terminal). For sessions
+        // launched by Claude.app, that tid points to an unrelated Ghostty tab,
+        // and without this shortcut the fast path would activate Ghostty and
+        // return early instead of surfacing Claude.app. Match Codex's pattern:
+        // try the GUI app first, fall back to bundle-id AppleScript so a
+        // relocated/renamed bundle still gets focused.
+        if host_terminal.as_deref() == Some("Claude Desktop") {
+            let opened = std::process::Command::new("open")
+                .args(["-a", "Claude"])
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false);
+            if !opened {
+                let _ = std::process::Command::new("osascript")
+                    .args(["-e", r#"tell application id "com.anthropic.claudefordesktop" to activate"#])
+                    .output();
+            }
+            return Ok("Jumped to Claude Desktop".to_string());
+        }
+
         // Fast path: if we have a Ghostty terminal ID from hooks, jump directly
         // to that tab without depending on PID ancestry checks.
         if let Some(tid_raw) = terminal_id.as_deref() {
@@ -9308,6 +9336,25 @@ end tell"#,
                     .output();
                 Ok("Jumped to Cursor".to_string())
             }
+            Some("Claude Desktop") => {
+                // The macOS app bundle is `/Applications/Claude.app` and its
+                // AppleScript-resolvable name is `Claude` (CFBundleName), not
+                // `Claude Desktop`. Activating via `open -a Claude` works for
+                // both running and not-yet-launched cases; fall back to a
+                // bundle-id AppleScript so a renamed/relocated bundle still
+                // gets focused.
+                let opened = std::process::Command::new("open")
+                    .args(["-a", "Claude"])
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false);
+                if !opened {
+                    let _ = std::process::Command::new("osascript")
+                        .args(["-e", r#"tell application id "com.anthropic.claudefordesktop" to activate"#])
+                        .output();
+                }
+                Ok("Jumped to Claude Desktop".to_string())
+            }
             Some(app_name) => {
                 let script = format!(
                     r#"tell application "{}" to activate"#,
@@ -9394,6 +9441,19 @@ fn find_terminal_app_for_pid(pid: u32) -> Option<String> {
         let comm = parts[1].trim();
         // Extract basename from full path
         let name = comm.rsplit('/').next().unwrap_or(comm);
+
+        // Claude Code Desktop on macOS launches the CLI from
+        // `~/Library/Application Support/Claude-3p/.../claude` and its
+        // ancestors live under `/Applications/Claude.app/`. Neither path
+        // matches a known terminal name, so detect the desktop app via path
+        // markers and tag the host accordingly. Keep this label in sync with
+        // the Windows side (`find_host_app_for_pid_win`) so the frontend can
+        // gate sessions through the same `enable_claude_desktop` toggle and
+        // the active-tab check (`frontmost_matches_host_terminal`) can
+        // suppress the completion popup when Claude.app is frontmost.
+        if comm.contains("Claude-3p") || comm.contains("/Applications/Claude.app/") {
+            return Some("Claude Desktop".to_string());
+        }
 
         if known_terminals.iter().any(|t| name.eq_ignore_ascii_case(t)) {
             return Some(name.to_string());
@@ -10022,16 +10082,30 @@ export OOCLAW_INTERACTIVE=$IS_INTERACTIVE
 export CC_PID=$PPID
 
 # Capture Ghostty terminal ID once per CC session (cached per CC PID).
-# The hook runs inside the CC terminal, so the focused tab is the right one.
-_TID_CACHE="/tmp/ooclaw-tid-$PPID"
-if [ -f "$_TID_CACHE" ]; then
-    export GHOSTTY_TID=$(cat "$_TID_CACHE" 2>/dev/null)
-else
-    export GHOSTTY_TID=$(osascript -e 'try
+# The hook runs inside the CC terminal, so the focused tab is the right one
+# — but only when CC was actually launched from a terminal. Skip when CC is
+# spawned by Claude Desktop (its CLI lives under `Claude-3p` in Application
+# Support and its parent chain runs through `/Applications/Claude.app/`); in
+# that case the AppleScript would happily return whatever Ghostty tab is
+# currently focused, and the resulting terminal_id pollutes the session so
+# `jump_to_claude_terminal` would surface Ghostty instead of Claude.app.
+_PARENT_EXE=$(ps -p $PPID -o comm= 2>/dev/null)
+case "$_PARENT_EXE" in
+    *Claude-3p*|*/Applications/Claude.app/*)
+        GHOSTTY_TID=""
+        ;;
+    *)
+        _TID_CACHE="/tmp/ooclaw-tid-$PPID"
+        if [ -f "$_TID_CACHE" ]; then
+            export GHOSTTY_TID=$(cat "$_TID_CACHE" 2>/dev/null)
+        else
+            export GHOSTTY_TID=$(osascript -e 'try
 tell application "Ghostty" to return id of first terminal of selected tab of front window as text
 end try' 2>/dev/null || echo "")
-    [ -n "$GHOSTTY_TID" ] && echo "$GHOSTTY_TID" > "$_TID_CACHE" 2>/dev/null
-fi
+            [ -n "$GHOSTTY_TID" ] && echo "$GHOSTTY_TID" > "$_TID_CACHE" 2>/dev/null
+        fi
+        ;;
+esac
 
 /usr/bin/python3 -c "
 import json, os, socket, sys
