@@ -2179,22 +2179,33 @@ export default function Mini() {
         // In efficiency mode, auto-expand panel when a session just completed
         // with an AI response (lastResponse appeared for the first time).
         // Mark all newly completed sessions as seen, but only auto-expand
-        // if the session's terminal tab is not currently active.
+        // if the session's terminal tab is not currently active AND the user
+        // is not actively typing (keyboard idle > 3s to avoid interruption).
+        const newCompletions: any[] = []
         for (const s of sessions) {
-          if (s.lastResponse && s.status === 'stopped' && !seenCompletions.has(s.sessionId)) {
+          if (s.lastResponse && s.status === 'stopped' && !seenCompletions.has(s.sessionId) && s.source !== 'hermes') {
             seenCompletions.add(s.sessionId)
-            // Only auto-expand if tab not active and panel is collapsed
-            if (
-              autoExpandOnTaskRef.current &&
-              !updateModalOpenRef.current &&
-              !s.isActiveTab &&
-              viewModeRef.current === 'efficiency' &&
-              !expandedRef.current &&
-              !expandingRef.current &&
-              !collapsingRef.current
-            ) {
+            newCompletions.push(s)
+          }
+        }
+        if (newCompletions.length > 0) {
+          let shouldExpand = autoExpandOnTaskRef.current &&
+            !updateModalOpenRef.current &&
+            viewModeRef.current === 'efficiency' &&
+            !expandedRef.current &&
+            !expandingRef.current &&
+            !collapsingRef.current
+          if (shouldExpand) {
+            try {
+              const kbIdle = await invoke('get_keyboard_idle_secs') as number
+              if (kbIdle < 3) shouldExpand = false
+            } catch {}
+          }
+          if (shouldExpand) {
+            const candidate = newCompletions.find(s => !s.isActiveTab) || newCompletions[0]
+            if (candidate && !candidate.isActiveTab) {
               hoverExpandedRef.current = true
-              setCompletionSessionId(s.sessionId)
+              setCompletionSessionId(candidate.sessionId)
               expandFnRef.current?.()
             }
           }
@@ -4792,24 +4803,16 @@ export default function Mini() {
                                     transition={{ duration: 0.2, delay: index * 0.05 }}
                                     data-no-drag
                                     onClick={() => {
-                                      if (!isWaiting || isGeminiSource || isHermesSource) {
+                                      if (isHermesSource) {
+                                        setSelectedAgentId(null)
+                                        setSelectedSessionKey(null)
+                                        setShowClaudeStats(false)
+                                        setSelectedClaudeSession(cs.sessionId)
+                                        return
+                                      }
+                                      if (!isWaiting || isGeminiSource) {
                                         if (cs.source === 'cursor') {
                                           invoke('focus_cursor_terminal', { sessionId: cs.sessionId }).catch((err: unknown) => console.warn('focus cursor failed:', err))
-                                        } else if (isHermesSource && cs.platform) {
-                                          const p = (cs.platform || '').toLowerCase()
-                                          const appName =
-                                            p.includes('feishu') || p.includes('lark') ? 'Lark'
-                                            : p.includes('telegram') ? 'Telegram'
-                                            : p.includes('discord') ? 'Discord'
-                                            : p.includes('slack') ? 'Slack'
-                                            : p.includes('wechat') || p.includes('weixin') ? 'WeChat'
-                                            : p.includes('whatsapp') ? 'WhatsApp'
-                                            : null
-                                          if (appName) {
-                                            invoke('activate_app', { appName }).catch((err: unknown) => console.warn('activate failed:', err))
-                                          } else {
-                                            invoke('jump_to_claude_terminal', { sessionId: cs.sessionId }).catch((err: unknown) => console.warn('jump failed:', err))
-                                          }
                                         } else {
                                           invoke('jump_to_claude_terminal', { sessionId: cs.sessionId }).catch((err: unknown) => console.warn('jump failed:', err))
                                         }
@@ -5632,7 +5635,11 @@ export default function Mini() {
                   exit={{ opacity: 0, filter: 'blur(8px)', y: -20 }}
                   transition={{ duration: 0.25, delay: 0.05 }}
                 >
-                  <ClaudeStatsView source={claudeStatsSource} />
+                  <ClaudeStatsView
+                    source={claudeStatsSource}
+                    isActive={claudeStatsSource === 'hermes' ? claudeSessions.some(s => s.source === 'hermes' && (s.status === 'processing' || s.status === 'tool_running')) : undefined}
+                    channel={claudeStatsSource === 'hermes' ? (claudeSessions.find(s => s.source === 'hermes')?.platform || undefined) : undefined}
+                  />
                 </motion.div>
               ) : (
                 /* ===== Agent detail panel (ui-2 style) ===== */

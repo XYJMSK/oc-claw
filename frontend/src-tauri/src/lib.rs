@@ -4236,6 +4236,33 @@ async fn get_system_idle_time(app: tauri::AppHandle) -> Result<f64, String> {
     }
 }
 
+/// Seconds since the last keyboard event (key down).
+/// Used to suppress auto-expand popups when the user is actively typing.
+#[tauri::command]
+async fn get_keyboard_idle_secs(app: tauri::AppHandle) -> Result<f64, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let (tx, rx) = std::sync::mpsc::channel::<f64>();
+        app.run_on_main_thread(move || {
+            #[link(name = "CoreGraphics", kind = "framework")]
+            extern "C" {
+                fn CGEventSourceSecondsSinceLastEventType(
+                    state_id: i32,
+                    event_type: u32,
+                ) -> f64;
+            }
+            // kCGEventKeyDown = 10
+            let idle = unsafe { CGEventSourceSecondsSinceLastEventType(0, 10) };
+            let _ = tx.send(idle);
+        }).map_err(|e| e.to_string())?;
+        rx.recv().map_err(|e| e.to_string())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Ok(999.0)
+    }
+}
+
 #[tauri::command]
 async fn get_now_playing(app: tauri::AppHandle) -> Result<String, String> {
     #[cfg(target_os = "macos")]
@@ -6688,6 +6715,9 @@ type PendingPermissions = Arc<Mutex<HashMap<String, std::sync::mpsc::Sender<Stri
 struct ClaudeState {
     sessions: Arc<Mutex<HashMap<String, ClaudeSession>>>,
     pending_permissions: PendingPermissions,
+    /// Session IDs dismissed by the user (trash icon). Prevents DB-loaded
+    /// Hermes sessions from reappearing after removal.
+    dismissed: Arc<Mutex<std::collections::HashSet<String>>>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -7319,13 +7349,28 @@ async fn get_claude_sessions(state: tauri::State<'_, ClaudeState>) -> Result<Vec
     }
     // Supplement with recent Hermes sessions from state.db so historical
     // sessions appear even if oc-claw was started after the Hermes session.
+    // Also backfill user_prompt for live Hermes sessions that lack it.
+    // Skip sessions the user has explicitly dismissed.
+    let dismissed = state.dismissed.lock().map(|d| d.clone()).unwrap_or_default();
     let live_hermes_ids: std::collections::HashSet<String> = list.iter()
         .filter(|s| s.source == "hermes")
         .map(|s| s.session_id.clone())
         .collect();
     if let Ok(db_sessions) = load_recent_hermes_sessions_from_db() {
         for dbs in db_sessions {
-            if !live_hermes_ids.contains(&dbs.session_id) {
+            if dismissed.contains(&dbs.session_id) {
+                continue;
+            }
+            if live_hermes_ids.contains(&dbs.session_id) {
+                // Backfill user_prompt for live sessions missing it
+                if let Some(ref prompt) = dbs.user_prompt {
+                    if let Some(live) = list.iter_mut().find(|s| s.source == "hermes" && s.session_id == dbs.session_id) {
+                        if live.user_prompt.is_none() || live.user_prompt.as_deref() == Some("") {
+                            live.user_prompt = Some(prompt.clone());
+                        }
+                    }
+                }
+            } else {
                 list.push(dbs);
             }
         }
@@ -7437,6 +7482,10 @@ fn load_recent_hermes_sessions_from_db() -> Result<Vec<ClaudeSession>, String> {
 async fn remove_claude_session(session_id: String, state: tauri::State<'_, ClaudeState>) -> Result<(), String> {
     let mut sessions = state.sessions.lock().map_err(|e| e.to_string())?;
     sessions.remove(&session_id);
+    drop(sessions);
+    if let Ok(mut dismissed) = state.dismissed.lock() {
+        dismissed.insert(session_id);
+    }
     Ok(())
 }
 
@@ -10321,6 +10370,212 @@ async fn get_claude_conversation(session_id: String) -> Result<Vec<ChatMessage>,
     Ok(messages)
 }
 
+/// Return a summary of recent Hermes sessions for the stats detail view.
+#[tauri::command]
+async fn get_hermes_sessions_summary() -> Result<Vec<serde_json::Value>, String> {
+    let home = dirs::home_dir().ok_or("no home dir")?;
+    let db_path = home.join(".hermes").join("state.db");
+    if !db_path.exists() {
+        return Ok(vec![]);
+    }
+    let conn = rusqlite::Connection::open_with_flags(
+        &db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    ).map_err(|e| format!("open state.db: {}", e))?;
+
+    let mut stmt = conn.prepare(
+        "SELECT id, source, started_at, message_count, input_tokens, output_tokens \
+         FROM sessions ORDER BY started_at DESC LIMIT 30"
+    ).map_err(|e| format!("prepare: {}", e))?;
+
+    let mut user_stmt = conn.prepare(
+        "SELECT substr(content, 1, 200) FROM messages \
+         WHERE session_id = ?1 AND role = 'user' ORDER BY timestamp DESC LIMIT 1"
+    ).map_err(|e| format!("prepare user: {}", e))?;
+
+    let mut asst_stmt = conn.prepare(
+        "SELECT substr(content, 1, 200) FROM messages \
+         WHERE session_id = ?1 AND role = 'assistant' ORDER BY timestamp DESC LIMIT 1"
+    ).map_err(|e| format!("prepare asst: {}", e))?;
+
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1).unwrap_or_default(),
+            row.get::<_, f64>(2).unwrap_or(0.0),
+            row.get::<_, i64>(3).unwrap_or(0),
+            row.get::<_, i64>(4).unwrap_or(0),
+            row.get::<_, i64>(5).unwrap_or(0),
+        ))
+    }).map_err(|e| format!("query: {}", e))?;
+
+    let mut results = Vec::new();
+    for row in rows {
+        let (id, platform, started_at, msg_count, input_tok, output_tok) =
+            row.map_err(|e| format!("row: {}", e))?;
+        let last_user: String = user_stmt
+            .query_row(rusqlite::params![&id], |r| r.get(0)).unwrap_or_default();
+        let last_asst: String = asst_stmt
+            .query_row(rusqlite::params![&id], |r| r.get(0)).unwrap_or_default();
+        results.push(serde_json::json!({
+            "sessionId": id,
+            "platform": platform,
+            "startedAt": started_at,
+            "messageCount": msg_count,
+            "inputTokens": input_tok,
+            "outputTokens": output_tok,
+            "lastUserMsg": last_user,
+            "lastAssistantMsg": last_asst,
+        }));
+    }
+    Ok(results)
+}
+
+/// Return recent activity entries across all Hermes sessions for the detail view.
+/// Each entry has: type (user/assistant/tool), summary, timestamp.
+/// Results are ordered newest-first so the frontend can display them directly.
+#[tauri::command]
+async fn get_hermes_recent_activity() -> Result<Vec<serde_json::Value>, String> {
+    let home = dirs::home_dir().ok_or("no home dir")?;
+    let db_path = home.join(".hermes").join("state.db");
+    if !db_path.exists() {
+        return Ok(vec![]);
+    }
+    let conn = rusqlite::Connection::open_with_flags(
+        &db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    ).map_err(|e| format!("open state.db: {}", e))?;
+
+    // Read tool_calls without truncation so JSON parsing succeeds
+    let mut stmt = conn.prepare(
+        "SELECT role, substr(content, 1, 200), tool_name, tool_calls, tool_call_id, timestamp \
+         FROM messages \
+         WHERE role IN ('user', 'assistant', 'tool') \
+         ORDER BY timestamp DESC LIMIT 60"
+    ).map_err(|e| format!("prepare: {}", e))?;
+
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, Option<String>>(1)?,
+            row.get::<_, Option<String>>(2)?,
+            row.get::<_, Option<String>>(3)?,
+            row.get::<_, Option<String>>(4)?,
+            row.get::<_, f64>(5)?,
+        ))
+    }).map_err(|e| format!("query: {}", e))?;
+
+    let truncate = |s: &str, max_chars: usize| -> String {
+        if s.chars().count() <= max_chars {
+            s.to_string()
+        } else {
+            let end: String = s.chars().take(max_chars).collect();
+            format!("{}…", end)
+        }
+    };
+
+    // First pass: collect assistant tool_calls to build a call_id -> fn_name map
+    struct RawRow {
+        role: String,
+        content: Option<String>,
+        tool_name: Option<String>,
+        tool_calls: Option<String>,
+        tool_call_id: Option<String>,
+        ts: f64,
+    }
+    let mut raw_rows = Vec::new();
+    let mut call_id_to_name: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+
+    for row in rows {
+        let (role, content, tool_name, tool_calls, tool_call_id, ts) = row.map_err(|e| format!("row: {}", e))?;
+        if role == "assistant" {
+            if let Some(ref tc_str) = tool_calls {
+                if let Ok(tc_arr) = serde_json::from_str::<Vec<serde_json::Value>>(tc_str) {
+                    for tc in &tc_arr {
+                        let cid = tc.get("id").or_else(|| tc.get("call_id"))
+                            .and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        let fname = tc.get("function")
+                            .and_then(|f| f.get("name"))
+                            .and_then(|n| n.as_str())
+                            .unwrap_or("unknown").to_string();
+                        if !cid.is_empty() {
+                            call_id_to_name.insert(cid, fname);
+                        }
+                    }
+                }
+            }
+        }
+        raw_rows.push(RawRow { role, content, tool_name, tool_calls, tool_call_id, ts });
+    }
+
+    let mut results = Vec::new();
+    for r in &raw_rows {
+        if r.role == "tool" {
+            // Resolve tool name: from tool_name field, or from call_id -> fn_name map
+            let name = r.tool_name.as_deref().unwrap_or("");
+            let resolved_name = if name.is_empty() {
+                r.tool_call_id.as_deref()
+                    .and_then(|cid| call_id_to_name.get(cid))
+                    .map(|s| s.as_str())
+                    .unwrap_or("tool")
+            } else {
+                name
+            };
+            results.push(serde_json::json!({
+                "type": "tool",
+                "summary": format!("⚡ {}", resolved_name),
+                "toolName": resolved_name,
+                "timestamp": r.ts,
+            }));
+            continue;
+        }
+
+        if r.role == "assistant" {
+            // Show tool call invocations
+            if let Some(ref tc_str) = r.tool_calls {
+                if let Ok(tc_arr) = serde_json::from_str::<Vec<serde_json::Value>>(tc_str) {
+                    for tc in &tc_arr {
+                        let fn_name = tc.get("function")
+                            .and_then(|f| f.get("name"))
+                            .and_then(|n| n.as_str())
+                            .unwrap_or("unknown");
+                        results.push(serde_json::json!({
+                            "type": "tool",
+                            "summary": format!("⚡ {}", fn_name),
+                            "toolName": fn_name,
+                            "timestamp": r.ts,
+                        }));
+                    }
+                }
+            }
+            // Text content
+            if let Some(ref text) = r.content {
+                let trimmed = text.trim();
+                if !trimmed.is_empty() {
+                    results.push(serde_json::json!({
+                        "type": "assistant",
+                        "summary": truncate(trimmed, 60),
+                        "timestamp": r.ts,
+                    }));
+                }
+            }
+            continue;
+        }
+
+        if r.role == "user" || r.role == "human" {
+            let text = r.content.as_deref().unwrap_or("");
+            let trimmed = text.trim();
+            if trimmed.is_empty() { continue; }
+            results.push(serde_json::json!({
+                "type": "user",
+                "summary": truncate(trimmed, 60),
+                "timestamp": r.ts,
+            }));
+        }
+    }
+    Ok(results)
+}
+
 /// Load conversation messages for a Hermes session from ~/.hermes/state.db.
 fn load_hermes_conversation(session_id: &str) -> Result<Vec<ChatMessage>, String> {
     let home = dirs::home_dir().ok_or("no home dir")?;
@@ -11593,7 +11848,7 @@ fn process_claude_event(
                     } else {
                         false
                     };
-                    if is_tab_active || interrupted {
+                    if is_tab_active || interrupted || session.source == "hermes" {
                         session.last_response = None;
                     } else {
                         // Prefer lastResponse from the event itself (CC's Stop has it),
@@ -12092,9 +12347,15 @@ def _handle(event_name, **kwargs):
     if event_name in ("pre_tool_call", "post_tool_call", "pre_approval_request"):
         tool_name = kwargs.get("tool_name", "") or kwargs.get("tool", "") or ""
     platform = kwargs.get("platform", "") or ""
+    try:
+        cwd = os.getcwd()
+    except Exception:
+        cwd = os.path.expanduser("~/.hermes")
+    if not cwd:
+        cwd = os.path.expanduser("~/.hermes")
     payload = {{
         "sessionId": session_id,
-        "cwd": os.getcwd(),
+        "cwd": cwd,
         "event": cc_event,
         "claudeStatus": status,
         "source": "hermes",
@@ -12103,6 +12364,16 @@ def _handle(event_name, **kwargs):
     }}
     if tool_name:
         payload["tool"] = tool_name
+    if event_name == "pre_llm_call":
+        prompt = kwargs.get("prompt", "") or kwargs.get("message", "")
+        if prompt:
+            payload["userPrompt"] = prompt[:500]
+    elif event_name == "post_llm_call":
+        resp = kwargs.get("response", "") or kwargs.get("result", "")
+        if isinstance(resp, dict):
+            resp = resp.get("content", "") or resp.get("text", "")
+        if resp and isinstance(resp, str):
+            payload["lastResponse"] = resp[:2000]
     _send(payload)
 
 def _make_cb(event_name):
@@ -12248,13 +12519,21 @@ def handle(event_type, context):
         session_id = f"gw_{{platform}}_{{user_id}}" if user_id else f"gw_{{platform}}"
     payload = {{
         "sessionId": session_id,
-        "cwd": "",
+        "cwd": os.path.expanduser("~/.hermes"),
         "event": oc_event,
         "claudeStatus": claude_status,
         "source": "hermes",
         "pid": os.getpid(),
         "platform": platform or "gateway",
     }}
+    if event_type == "agent:start":
+        msg = context.get("message", "")
+        if msg:
+            payload["userPrompt"] = msg[:500]
+    elif event_type == "agent:end":
+        resp = context.get("response", "")
+        if resp:
+            payload["lastResponse"] = resp[:2000]
     _log(f"payload: {{json.dumps(payload)}}")
     _send_to_ooclaw(payload)
 "##, gw_connect_code = gw_connect_code);
@@ -13234,6 +13513,7 @@ fn start_gemini_socket_server(
 /// On Windows: TCP server on localhost:19286
 fn start_hermes_socket_server(
     claude_state: Arc<Mutex<HashMap<String, ClaudeSession>>>,
+    dismissed: Arc<Mutex<std::collections::HashSet<String>>>,
     app: tauri::AppHandle,
 ) {
     #[cfg(unix)]
@@ -13247,17 +13527,27 @@ fn start_hermes_socket_server(
         log::info!("[hermes_socket] listening on {}", socket_path);
 
         let state = Arc::clone(&claude_state);
+        let dismissed = Arc::clone(&dismissed);
         let app2 = app.clone();
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 if let Ok(mut stream) = stream {
                     let state = Arc::clone(&state);
+                    let dismissed = Arc::clone(&dismissed);
                     let app = app2.clone();
                     std::thread::spawn(move || {
                         use std::io::Read;
                         let mut buf = String::new();
                         let _ = stream.read_to_string(&mut buf);
                         if !buf.is_empty() {
+                            // Re-admit dismissed sessions on new activity
+                            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&buf) {
+                                if let Some(sid) = parsed.get("sessionId").and_then(|v| v.as_str()) {
+                                    if let Ok(mut d) = dismissed.lock() {
+                                        d.remove(sid);
+                                    }
+                                }
+                            }
                             process_claude_event(&buf, &state, &app, Some("hermes"));
                         }
                     });
@@ -13275,18 +13565,27 @@ fn start_hermes_socket_server(
         log::info!("[hermes_socket] listening on 127.0.0.1:19286");
 
         let state = Arc::clone(&claude_state);
+        let dismissed = Arc::clone(&dismissed);
         let app2 = app.clone();
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 if let Ok(mut stream) = stream {
                     let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
                     let state = Arc::clone(&state);
+                    let dismissed = Arc::clone(&dismissed);
                     let app = app2.clone();
                     std::thread::spawn(move || {
                         use std::io::Read;
                         let mut buf = String::new();
                         let _ = stream.read_to_string(&mut buf);
                         if !buf.is_empty() {
+                            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&buf) {
+                                if let Some(sid) = parsed.get("sessionId").and_then(|v| v.as_str()) {
+                                    if let Ok(mut d) = dismissed.lock() {
+                                        d.remove(sid);
+                                    }
+                                }
+                            }
                             process_claude_event(&buf, &state, &app, Some("hermes"));
                         }
                     });
@@ -13998,7 +14297,8 @@ pub fn run() {
             {
                 let claude_state = app.state::<ClaudeState>();
                 let sessions_arc = Arc::clone(&claude_state.sessions);
-                start_hermes_socket_server(sessions_arc, app.handle().clone());
+                let dismissed_arc = Arc::clone(&claude_state.dismissed);
+                start_hermes_socket_server(sessions_arc, dismissed_arc, app.handle().clone());
             }
 
             // System tray — use saved language, fallback to system language
@@ -14069,9 +14369,9 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, set_efficiency_hover_tracking, resize_mini_height, move_mini_by, get_mini_origin, get_mini_monitor_rect, set_mini_origin, set_ime_mode, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, install_cursor_hooks, install_gemini_hooks, install_hermes_hooks, test_hermes_hook, get_hermes_remote_stats, get_hermes_remote_sessions, test_hermes_ssh, remove_claude_session, resolve_claude_permission, get_claude_stats, open_url, activate_app, focus_cursor_terminal, check_ax_permission, request_ax_permission, jump_to_claude_terminal, check_for_update, run_update, close_ssh, read_local_file, list_backgrounds, save_background, get_background_data, exit_app, get_ssh_key_info, reset_ssh, get_ui_scale, list_custom_codex_pets, open_codex_pets_dir, import_codex_pet, pick_codex_pet_folder, reassert_floating, spawn_demo_mascot, close_demo_mascot, close_demo_mascots, debug_log, update_tray_language, set_pet_mode_window, set_pet_context_menu, set_pet_pomodoro_active, get_now_playing, get_system_idle_time])
+        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, set_efficiency_hover_tracking, resize_mini_height, move_mini_by, get_mini_origin, get_mini_monitor_rect, set_mini_origin, set_ime_mode, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, install_cursor_hooks, install_gemini_hooks, install_hermes_hooks, test_hermes_hook, get_hermes_remote_stats, get_hermes_remote_sessions, get_hermes_sessions_summary, get_hermes_recent_activity, test_hermes_ssh, remove_claude_session, resolve_claude_permission, get_claude_stats, open_url, activate_app, focus_cursor_terminal, check_ax_permission, request_ax_permission, jump_to_claude_terminal, check_for_update, run_update, close_ssh, read_local_file, list_backgrounds, save_background, get_background_data, exit_app, get_ssh_key_info, reset_ssh, get_ui_scale, list_custom_codex_pets, open_codex_pets_dir, import_codex_pet, pick_codex_pet_folder, reassert_floating, spawn_demo_mascot, close_demo_mascot, close_demo_mascots, debug_log, update_tray_language, set_pet_mode_window, set_pet_context_menu, set_pet_pomodoro_active, get_now_playing, get_system_idle_time, get_keyboard_idle_secs])
         .manage(ActiveAgentPid { pid: Mutex::new(None) })
-        .manage(ClaudeState { sessions: Arc::new(Mutex::new(HashMap::new())), pending_permissions: Arc::new(Mutex::new(HashMap::new())) })
+        .manage(ClaudeState { sessions: Arc::new(Mutex::new(HashMap::new())), pending_permissions: Arc::new(Mutex::new(HashMap::new())), dismissed: Arc::new(Mutex::new(std::collections::HashSet::new())) })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

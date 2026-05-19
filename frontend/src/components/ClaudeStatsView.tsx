@@ -107,7 +107,122 @@ function DailyChart({ stats }: { stats: DailyStats[] }) {
   )
 }
 
-export function ClaudeStatsView({ source = 'cc' }: { source?: ClaudeStatsSource }) {
+interface HermesActivity {
+  type: 'user' | 'assistant' | 'tool'
+  summary: string
+  toolName?: string
+  timestamp: number
+}
+
+function HermesDetailView({ stats, isActive, channel }: { stats: ClaudeStats; isActive?: boolean; channel?: string }) {
+  const { t } = useTranslation()
+  const [activities, setActivities] = useState<HermesActivity[]>([])
+
+  useEffect(() => {
+    invoke('get_hermes_recent_activity').then((items: any) => {
+      if (!items?.length) return
+      setActivities(items.slice(0, 3))
+    }).catch(() => {})
+  }, [])
+
+  const fmtTime = (ts: number) => {
+    const d = new Date(ts * 1000)
+    return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+  }
+
+  const totalTokens = stats.totalInputTokens + stats.totalOutputTokens + stats.totalCacheReadTokens + stats.totalCacheWriteTokens
+  const active = isActive ?? false
+
+  return (
+    <div className="flex-1 min-h-0 px-5 py-5 flex flex-col gap-6 overflow-y-auto scrollbar-thin">
+
+      {/* Hero Profile */}
+      <div className="flex flex-col gap-4">
+        <div className="flex items-center justify-between">
+          <div className="flex flex-col">
+            <h1 className="text-lg font-semibold text-white tracking-tight">Hermes</h1>
+            {channel && <span className="text-xs text-white/40">via {channel}</span>}
+          </div>
+          <span className={`px-2.5 py-1 rounded-full text-xs font-medium border flex items-center gap-1.5 ${
+            active
+              ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
+              : 'bg-white/5 text-white/50 border-white/10'
+          }`}>
+            <span className={`w-1.5 h-1.5 rounded-full ${active ? 'bg-emerald-400 animate-pulse' : 'bg-white/30'}`} />
+            {active ? t('agentDetail.working') : t('agentDetail.idleStatus')}
+          </span>
+        </div>
+      </div>
+
+      {/* Recent Activity */}
+      {activities.length > 0 && (
+        <div className="flex flex-col gap-3">
+          <span className="text-[10px] font-medium text-white/40 uppercase tracking-wider px-1">{t('agentDetail.recentActivity')}</span>
+          <div className="bg-[#0a0a0a] border border-white/5 rounded-2xl p-4 flex flex-col gap-4 font-mono text-xs">
+            {activities.map((a, i) => (
+              <div key={i} className="flex items-start gap-3 opacity-80 hover:opacity-100 transition-opacity">
+                <span className={`mt-0.5 text-[10px] ${a.type === 'tool' ? 'text-blue-400' : a.type === 'user' ? 'text-purple-400' : 'text-emerald-400'}`}>●</span>
+                <span className="text-white/70 flex-1 leading-relaxed truncate">
+                  {a.summary}
+                </span>
+                <span className="text-white/30 shrink-0">{fmtTime(a.timestamp)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Bento Grid: Stats */}
+      <div className="grid grid-cols-2 gap-3">
+        {/* Tokens */}
+        <div className="bg-white/[0.03] border border-white/5 rounded-2xl p-4 flex flex-col gap-1 hover:bg-white/[0.05] transition-colors">
+          <span className="text-[10px] font-medium text-white/40 uppercase tracking-wider">{t('agentDetail.tokensUsed')}</span>
+          <div className="flex items-baseline gap-1.5 mt-1">
+            <span className="text-2xl font-semibold text-white tracking-tight">{formatTokens(totalTokens)}</span>
+          </div>
+          <span className="text-xs text-white/40 mt-1">{stats.totalSessions} {t('claudeStats.sessionsCount')}</span>
+        </div>
+
+        {/* Session */}
+        <div className="bg-white/[0.03] border border-white/5 rounded-2xl p-4 flex flex-col gap-1 hover:bg-white/[0.05] transition-colors">
+          <span className="text-[10px] font-medium text-white/40 uppercase tracking-wider">{t('agentDetail.sessionStatus')}</span>
+          <div className="flex items-baseline gap-2 mt-1">
+            <span className="text-2xl font-semibold text-white tracking-tight">{stats.totalMessages}</span>
+            <span className="text-xs text-white/40">{t('agentDetail.messages')}</span>
+          </div>
+        </div>
+      </div>
+
+      {/* Model Details */}
+      <div className="flex flex-col gap-3 bg-white/[0.03] border border-white/5 rounded-2xl p-4 hover:bg-white/[0.05] transition-colors">
+        <div className="flex items-center justify-between">
+          <span className="text-[10px] font-medium text-white/40 uppercase tracking-wider">{t('agentDetail.model')}</span>
+          <span className="text-xs font-medium text-white/70">{stats.model || t('common.unknown')}</span>
+        </div>
+        <div className="grid grid-cols-4 gap-2 text-xs mt-1">
+          {([
+            [t('agentDetail.input'), stats.totalInputTokens],
+            [t('agentDetail.output'), stats.totalOutputTokens],
+            [t('agentDetail.cacheRead'), stats.totalCacheReadTokens],
+            [t('agentDetail.cacheWrite'), stats.totalCacheWriteTokens],
+          ] as [string, number][]).map(([label, val]) => (
+            <div key={label} className="flex flex-col gap-1">
+              <span className="text-white/40 text-[10px]">{label}</span>
+              <span className="text-white/90 font-mono">{formatTokens(val)}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Daily chart */}
+      {stats.dailyStats.length > 0 && (
+        <DailyChart stats={stats.dailyStats} />
+      )}
+    </div>
+  )
+}
+
+export function ClaudeStatsView({ source = 'cc', isActive, channel }: { source?: ClaudeStatsSource; isActive?: boolean; channel?: string }) {
   const { t } = useTranslation()
   const [stats, setStats] = useState<ClaudeStats | null>(null)
 
@@ -143,8 +258,6 @@ export function ClaudeStatsView({ source = 'cc' }: { source?: ClaudeStatsSource 
           ? 'claudeStats.titleHermes'
           : 'claudeStats.title'
 
-  // Cursor does not expose reliable token usage to oc-claw, so its stats page
-  // is intentionally a placeholder rather than misleading numbers from CC.
   if (source === 'cursor' || source === 'gemini') {
     const unsupportedTitle = source === 'cursor'
       ? t('claudeStats.cursorUnsupportedTitle', 'Cursor 暂不支持详细统计')
@@ -167,6 +280,11 @@ export function ClaudeStatsView({ source = 'cc' }: { source?: ClaudeStatsSource 
         </div>
       </div>
     )
+  }
+
+  // Hermes: use AgentDetailView-style layout
+  if (source === 'hermes') {
+    return <HermesDetailView stats={stats} isActive={isActive} channel={channel} />
   }
 
   return (
