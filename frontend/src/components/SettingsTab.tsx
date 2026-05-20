@@ -876,7 +876,7 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
       )}
 
       {/* Pet mode: mascot size */}
-      {isPetMode && !isWindowsPlatform && (
+      {isPetMode && (
         <section className="flex flex-col gap-4">
           <h2 className="text-lg font-medium text-white">{t('settings.display')}</h2>
           <div className="bg-[#0f0f0f] border border-white/5 rounded-2xl overflow-hidden">
@@ -890,7 +890,7 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
               </div>
               <input
                 type="range"
-                min={4}
+                min={1}
                 max={6}
                 step={0.1}
                 value={largeMascotScale}
@@ -1103,7 +1103,6 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
               className="w-full accent-white/60 h-1"
             />
           </div>
-          {!isWindowsPlatform && (
           <div className="p-4 border-b border-white/5">
             <div className="flex items-center justify-between mb-2">
               <div className="flex flex-col gap-1">
@@ -1122,7 +1121,6 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
               className="w-full accent-white/60 h-1"
             />
           </div>
-          )}
           {showIslandBackgroundSettings && (
             <div className="p-4">
               <div className="flex flex-col gap-1 mb-3">

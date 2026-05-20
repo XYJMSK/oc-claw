@@ -2091,7 +2091,7 @@ export default function Mini() {
       }
       const lms = await store.get('large_mascot_scale')
       if (typeof lms === 'number') {
-        const clamped = Math.min(6, Math.max(4, lms))
+        const clamped = Math.min(6, Math.max(1, lms))
         setLargeMascotScale(clamped)
         largeMascotScaleRef.current = clamped
       }
@@ -4767,7 +4767,7 @@ export default function Mini() {
                               } else {
                                 const cs = item.data
                                 const isHermesSrc = cs.source === 'hermes'
-                                const defaultProjectName = cs.cwd ? cs.cwd.split('/').pop() : (isHermesSrc ? (cs.user_prompt || cs.platform || 'Hermes') : 'unknown')
+                                const defaultProjectName = cs.cwd ? cs.cwd.replace(/\\/g, '/').split('/').pop() : (isHermesSrc ? (cs.user_prompt || cs.platform || 'Hermes') : 'unknown')
                                 const projectName = sessionNicknames[cs.sessionId] || defaultProjectName
                                 const isActive = item.active
                                 const isWaiting = cs.status === 'waiting'
@@ -4995,7 +4995,7 @@ export default function Mini() {
                                               const input = JSON.parse(cs.toolInput)
                                               // Write/Edit: show file name + numbered code lines
                                               if ((cs.tool === 'Write' || cs.tool === 'Edit') && (input.file_path || input.content)) {
-                                                const fileName = input.file_path ? input.file_path.split('/').pop() : ''
+                                                const fileName = input.file_path ? input.file_path.replace(/\\/g, '/').split('/').pop() : ''
                                                 const isNew = cs.tool === 'Write'
                                                 const content = input.content || input.new_string || input.old_string || ''
                                                 const lines = content.split('\n')
@@ -5547,7 +5547,7 @@ export default function Mini() {
                                 )
                               } else {
                                 const cs = item.data
-                                const projectName = cs.cwd ? cs.cwd.split('/').pop() : (cs.source === 'hermes' ? (cs.user_prompt || cs.platform || 'Hermes') : 'unknown')
+                                const projectName = cs.cwd ? cs.cwd.replace(/\\/g, '/').split('/').pop() : (cs.source === 'hermes' ? (cs.user_prompt || cs.platform || 'Hermes') : 'unknown')
                                 const isActive = item.active
                                 const isWaiting = cs.status === 'waiting'
                                 const statusText = cs.tool
@@ -5987,7 +5987,7 @@ export default function Mini() {
                         }}
                         largeMascotScale={largeMascotScale}
                         onChangeLargeMascotScale={async (v) => {
-                          const clamped = Math.min(6, Math.max(4, v))
+                          const clamped = Math.min(6, Math.max(1, v))
                           setLargeMascotScale(clamped)
                           largeMascotScaleRef.current = clamped
                           const store = await getStore()

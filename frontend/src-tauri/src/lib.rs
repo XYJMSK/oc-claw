@@ -8413,7 +8413,27 @@ async fn activate_app(app_name: String) -> Result<String, String> {
             .map_err(|e| e.to_string())?;
         Ok(format!("Activated {}", app_name))
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        let name_lower = app_name.to_lowercase();
+        let exe_candidates: Vec<String> = match name_lower.as_str() {
+            "lark" => vec!["lark.exe".into(), "feishu.exe".into()],
+            "telegram" => vec!["telegram.exe".into()],
+            "discord" => vec!["discord.exe".into()],
+            "slack" => vec!["slack.exe".into()],
+            "wechat" => vec!["wechat.exe".into(), "weixin.exe".into()],
+            "whatsapp" => vec!["whatsapp.exe".into()],
+            "mattermost" => vec!["mattermost.exe".into()],
+            _ => vec![format!("{}.exe", name_lower)],
+        };
+        let refs: Vec<&str> = exe_candidates.iter().map(|s| s.as_str()).collect();
+        if let Some(p) = find_pid_by_exe_names(&refs) {
+            activate_window_by_pid(p);
+            return Ok(format!("Activated {}", app_name));
+        }
+        Err(format!("Could not find running process for {}", app_name))
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         Err(format!("activate_app not supported on this platform"))
     }
@@ -8935,6 +8955,41 @@ fn find_running_claude_desktop_pid() -> Option<u32> {
                             break;
                         }
                     }
+                }
+                if Process32NextW(snapshot, &mut entry).is_err() {
+                    break;
+                }
+            }
+        }
+        let _ = CloseHandle(snapshot);
+    }
+    result
+}
+
+/// Find the first running process whose exe name (case-insensitive) matches
+/// any of the given names. Returns its PID so we can activate its window.
+#[cfg(target_os = "windows")]
+fn find_pid_by_exe_names(exe_names: &[&str]) -> Option<u32> {
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+    };
+    use windows::Win32::Foundation::CloseHandle;
+
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0).ok()? };
+    let mut entry = PROCESSENTRY32W {
+        dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+        ..Default::default()
+    };
+    let mut result = None;
+    unsafe {
+        if Process32FirstW(snapshot, &mut entry).is_ok() {
+            loop {
+                let name = String::from_utf16_lossy(
+                    &entry.szExeFile[..entry.szExeFile.iter().position(|&c| c == 0).unwrap_or(entry.szExeFile.len())]
+                ).to_lowercase();
+                if exe_names.iter().any(|e| name == e.to_lowercase()) {
+                    result = Some(entry.th32ProcessID);
+                    break;
                 }
                 if Process32NextW(snapshot, &mut entry).is_err() {
                     break;
@@ -9721,6 +9776,62 @@ end tell"#,
                 return Ok("Activated Claude Desktop window".to_string());
             }
         }
+
+        if let Some(p) = pid {
+            activate_window_by_pid(p);
+            return Ok(format!("Activated window for PID {}", p));
+        }
+
+        if source == "codex" {
+            let exe_names = &["codex.exe", "code.exe"];
+            if let Some(p) = find_pid_by_exe_names(exe_names) {
+                activate_window_by_pid(p);
+                return Ok("Activated Codex window".to_string());
+            }
+        } else if source == "gemini" {
+            let terminal_exes = &[
+                "windowsterminal.exe", "cmd.exe", "powershell.exe", "pwsh.exe",
+                "alacritty.exe", "wezterm-gui.exe", "hyper.exe",
+            ];
+            if let Some(p) = find_pid_by_exe_names(terminal_exes) {
+                activate_window_by_pid(p);
+                return Ok("Activated terminal for Gemini session".to_string());
+            }
+        } else if source == "hermes" {
+            let plat = platform.as_deref().unwrap_or("unknown").to_lowercase();
+            let app_exe: Option<&[&str]> = if plat.contains("feishu") || plat.contains("lark") {
+                Some(&["lark.exe", "feishu.exe"])
+            } else if plat.contains("telegram") {
+                Some(&["telegram.exe"])
+            } else if plat.contains("discord") {
+                Some(&["discord.exe"])
+            } else if plat.contains("slack") {
+                Some(&["slack.exe"])
+            } else if plat.contains("wechat") || plat.contains("weixin") {
+                Some(&["wechat.exe", "weixin.exe"])
+            } else if plat.contains("whatsapp") {
+                Some(&["whatsapp.exe"])
+            } else if plat.contains("mattermost") {
+                Some(&["mattermost.exe"])
+            } else {
+                None
+            };
+            if let Some(exes) = app_exe {
+                if let Some(p) = find_pid_by_exe_names(exes) {
+                    activate_window_by_pid(p);
+                    return Ok(format!("Activated {} window", plat));
+                }
+            }
+            let terminal_exes = &[
+                "windowsterminal.exe", "cmd.exe", "powershell.exe", "pwsh.exe",
+                "alacritty.exe", "wezterm-gui.exe",
+            ];
+            if let Some(p) = find_pid_by_exe_names(terminal_exes) {
+                activate_window_by_pid(p);
+                return Ok("Activated terminal for Hermes session".to_string());
+            }
+        }
+
         Ok("No action".to_string())
     }
 
@@ -12629,21 +12740,34 @@ def handle(event_type, context):
 
 /// Try to find the hermes binary on PATH or known locations.
 fn which_hermes() -> Option<std::path::PathBuf> {
-    // Check PATH first
-    if let Ok(output) = std::process::Command::new("which").arg("hermes").output() {
+    #[cfg(unix)]
+    let which_cmd = "which";
+    #[cfg(windows)]
+    let which_cmd = "where.exe";
+
+    if let Ok(output) = std::process::Command::new(which_cmd).arg("hermes").output() {
         if output.status.success() {
-            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let path = String::from_utf8_lossy(&output.stdout).lines().next().unwrap_or("").trim().to_string();
             if !path.is_empty() {
                 return Some(std::path::PathBuf::from(path));
             }
         }
     }
-    // Known locations
+
     if let Some(home) = dirs::home_dir() {
-        let candidates = [
+        #[cfg(unix)]
+        let candidates = vec![
             home.join(".local/bin/hermes"),
             home.join(".hermes/hermes-agent/venv/bin/hermes"),
         ];
+        #[cfg(windows)]
+        let candidates = vec![
+            home.join(".local\\bin\\hermes.exe"),
+            home.join(".hermes\\hermes-agent\\venv\\Scripts\\hermes.exe"),
+            home.join("AppData\\Local\\Programs\\hermes\\hermes.exe"),
+            home.join("scoop\\shims\\hermes.exe"),
+        ];
+
         for c in &candidates {
             if c.exists() {
                 return Some(c.clone());
