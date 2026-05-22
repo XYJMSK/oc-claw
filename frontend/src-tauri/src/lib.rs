@@ -13266,11 +13266,18 @@ def check_active(sid):
         ended_at, started_at = row
         if ended_at is not None:
             return False
-        last_ts = db_conn.execute('SELECT MAX(timestamp) FROM messages WHERE session_id=?', (sid,)).fetchone()[0]
-        if last_ts and (now - last_ts) > 180:
-            return False
-        if not last_ts and started_at and (now - started_at) > 300:
-            return False
+        last = db_conn.execute(
+            'SELECT role, tool_calls, timestamp FROM messages WHERE session_id=? ORDER BY timestamp DESC LIMIT 1',
+            (sid,)).fetchone()
+        if not last:
+            return started_at and (now - started_at) < 60
+        role, tool_calls, ts = last
+        age = now - ts if ts else 9999
+        if role == 'assistant' and not tool_calls:
+            return age < 8
+        if role in ('user', 'human'):
+            return age < 30
+        return age < 60
     except: pass
     return True
 # Active gateway sessions from sessions.json
@@ -13304,14 +13311,7 @@ if db_conn:
             ended = r[4]
             active = ended is None
             if active:
-                try:
-                    last_ts = db_conn.execute(
-                        'SELECT MAX(timestamp) FROM messages WHERE session_id=?', (sid,)).fetchone()[0]
-                    if last_ts and (now - last_ts) > 180:
-                        active = False
-                    elif not last_ts and r[3] and (now - r[3]) > 300:
-                        active = False
-                except: pass
+                active = check_active(sid)
             results.append({'sessionId': sid, 'platform': r[1] or '', 'model': r[2] or '',
                             'startedAt': r[3], 'messageCount': r[5] or 0,
                             'inputTokens': r[6] or 0, 'outputTokens': r[7] or 0,
