@@ -13262,7 +13262,8 @@ def check_active(sid):
     if not db_conn: return True
     try:
         row = db_conn.execute('SELECT ended_at, started_at FROM sessions WHERE id=?', (sid,)).fetchone()
-        if not row: return False
+        if not row:
+            return True
         ended_at, started_at = row
         if ended_at is not None:
             return False
@@ -13270,8 +13271,9 @@ def check_active(sid):
             'SELECT role, tool_calls, timestamp FROM messages WHERE session_id=? ORDER BY timestamp DESC LIMIT 1',
             (sid,)).fetchone()
         if not last:
-            return started_at and (now - started_at) < 120
+            return True
         role, tool_calls, ts = last
+        age = now - ts if ts else 9999
         if role in ('user', 'human'):
             return True
         if role == 'tool':
@@ -13279,8 +13281,8 @@ def check_active(sid):
         if role == 'assistant':
             if tool_calls:
                 return True
-            return False
-        return ts and (now - ts) < 30
+            return age < 15
+        return age < 30
     except: pass
     return True
 # Active gateway sessions from sessions.json
