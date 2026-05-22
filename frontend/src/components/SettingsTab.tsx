@@ -113,7 +113,7 @@ function ConnectionRow({ conn, onUpdate, onDelete, disableLocal }: { conn: OcCon
           <div className="flex bg-black/50 p-0.5 rounded-lg border border-white/5">
             {(['local', 'remote'] as const).map((typ) => {
               // Only one local connection allowed across all connections
-              const disabled = typ === 'local' && disableLocal && conn.type !== 'local'
+              const disabled = typ === 'local' && disableLocal
               return (
                 <button
                   key={typ}
@@ -299,18 +299,15 @@ function HermesConnectionRow({ conn, onUpdate, onDelete, disableLocal, t }: {
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
           <div className="flex bg-black/50 p-0.5 rounded-lg border border-white/5">
-            {(['local', 'remote'] as const).map((typ) => {
-              const disabled = typ === 'local' && disableLocal && conn.type !== 'local'
-              return (
-                <button
-                  key={typ}
-                  onClick={() => !disabled && onUpdate({ ...conn, type: typ })}
-                  className={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${conn.type === typ ? 'bg-white/10 text-white' : disabled ? 'text-white/15 cursor-not-allowed' : 'text-white/40 hover:text-white/60'}`}
-                >
-                  {typ === 'local' ? t('settings.local') : t('settings.remote')}
-                </button>
-              )
-            })}
+            {(['local', 'remote'] as const).filter(typ => !(typ === 'local' && disableLocal)).map((typ) => (
+              <button
+                key={typ}
+                onClick={() => onUpdate({ ...conn, type: typ })}
+                className={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${conn.type === typ ? 'bg-white/10 text-white' : 'text-white/40 hover:text-white/60'}`}
+              >
+                {typ === 'local' ? t('settings.local') : t('settings.remote')}
+              </button>
+            ))}
           </div>
           <span className="text-xs text-white/30">
             {conn.type === 'local' ? '~/.hermes' : conn.host ? `${conn.user || 'root'}@${conn.host}` : t('settings.notConfigured')}
@@ -424,6 +421,7 @@ function HermesSection({ enableHermes, toggleHermes, hermesHookStatus, t }: {
   hermesHookStatus: string
   t: any
 }) {
+  const isWindows = typeof navigator !== 'undefined' && navigator.userAgent.includes('Windows')
   const [conns, setConns] = useState<HermesConn[]>([])
 
   useEffect(() => {
@@ -432,7 +430,8 @@ function HermesSection({ enableHermes, toggleHermes, hermesHookStatus, t }: {
         const store = await getStore()
         const saved = await store.get<HermesConn[]>('hermes_connections')
         if (saved && saved.length > 0) {
-          setConns(saved)
+          const adjusted = isWindows ? saved.map(c => c.type === 'local' ? { ...c, type: 'remote' as const } : c) : saved
+          setConns(adjusted)
         } else {
           // Migrate from old hermes_ssh_connections format
           const oldSsh = await store.get<{ host: string; user: string }[]>('hermes_ssh_connections')
@@ -443,7 +442,7 @@ function HermesSection({ enableHermes, toggleHermes, hermesHookStatus, t }: {
             setConns(migrated)
             await store.set('hermes_connections', migrated)
           } else if (enableHermes) {
-            const defaultConn: HermesConn[] = [{ id: crypto.randomUUID(), type: 'local' }]
+            const defaultConn: HermesConn[] = [{ id: crypto.randomUUID(), type: isWindows ? 'remote' : 'local' }]
             setConns(defaultConn)
             await store.set('hermes_connections', defaultConn)
           }
@@ -465,7 +464,7 @@ function HermesSection({ enableHermes, toggleHermes, hermesHookStatus, t }: {
 
   const addConnection = () => {
     const hasLocal = conns.some(c => c.type === 'local')
-    saveConns([...conns, { id: crypto.randomUUID(), type: hasLocal ? 'remote' : 'local' }])
+    saveConns([...conns, { id: crypto.randomUUID(), type: (isWindows || hasLocal) ? 'remote' : 'local' }])
   }
 
   const updateConn = (idx: number, c: HermesConn) => {
@@ -514,7 +513,7 @@ function HermesSection({ enableHermes, toggleHermes, hermesHookStatus, t }: {
               conn={conn}
               onUpdate={(c) => updateConn(idx, c)}
               onDelete={() => deleteConn(idx)}
-              disableLocal={conns.some((c, i) => i !== idx && c.type === 'local')}
+              disableLocal={isWindows || conns.some((c, i) => i !== idx && c.type === 'local')}
               t={t}
             />
           ))
@@ -876,7 +875,7 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
       )}
 
       {/* Pet mode: mascot size */}
-      {isPetMode && !isWindowsPlatform && (
+      {isPetMode && (
         <section className="flex flex-col gap-4">
           <h2 className="text-lg font-medium text-white">{t('settings.display')}</h2>
           <div className="bg-[#0f0f0f] border border-white/5 rounded-2xl overflow-hidden">
@@ -890,7 +889,7 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
               </div>
               <input
                 type="range"
-                min={4}
+                min={1}
                 max={6}
                 step={0.1}
                 value={largeMascotScale}
@@ -1103,7 +1102,6 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
               className="w-full accent-white/60 h-1"
             />
           </div>
-          {!isWindowsPlatform && (
           <div className="p-4 border-b border-white/5">
             <div className="flex items-center justify-between mb-2">
               <div className="flex flex-col gap-1">
@@ -1122,7 +1120,6 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
               className="w-full accent-white/60 h-1"
             />
           </div>
-          )}
           {showIslandBackgroundSettings && (
             <div className="p-4">
               <div className="flex flex-col gap-1 mb-3">

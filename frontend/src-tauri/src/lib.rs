@@ -6806,6 +6806,153 @@ fn empty_claude_stats() -> ClaudeStats {
     }
 }
 
+fn collect_gemini_stats() -> Result<ClaudeStats, String> {
+    let home = dirs::home_dir().ok_or("no home dir")?;
+    let gemini_dir = home.join(".gemini");
+
+    let log_path = {
+        let settings_path = gemini_dir.join("settings.json");
+        let mut path: Option<std::path::PathBuf> = None;
+        if settings_path.exists() {
+            if let Ok(content) = std::fs::read_to_string(&settings_path) {
+                if let Ok(settings) = serde_json::from_str::<serde_json::Value>(&content) {
+                    if let Some(outfile) = settings.get("telemetry")
+                        .and_then(|t| t.get("outfile"))
+                        .and_then(|v| v.as_str())
+                    {
+                        let p = std::path::PathBuf::from(outfile);
+                        if p.is_absolute() {
+                            path = Some(p);
+                        } else {
+                            path = Some(home.join(outfile));
+                        }
+                    }
+                }
+            }
+        }
+        path.unwrap_or_else(|| gemini_dir.join("telemetry.jsonl"))
+    };
+
+    if !log_path.exists() {
+        return Ok(empty_claude_stats());
+    }
+
+    let content = std::fs::read_to_string(&log_path)
+        .map_err(|e| format!("read gemini telemetry: {}", e))?;
+
+    // The telemetry file is pretty-printed JSON objects concatenated
+    // without delimiters (e.g. "}\n{"). Use a streaming deserializer.
+    let stream = serde_json::Deserializer::from_str(&content).into_iter::<serde_json::Value>();
+
+    let now = chrono::Utc::now();
+    let cutoff = now - chrono::Duration::days(14);
+    let cutoff_str = cutoff.format("%Y-%m-%d").to_string();
+
+    let mut daily_map: std::collections::BTreeMap<String, ClaudeDailyStats> = std::collections::BTreeMap::new();
+    let mut total_input = 0u64;
+    let mut total_output = 0u64;
+    let mut total_cache_read = 0u64;
+    let mut total_messages = 0u64;
+    let mut total_sessions = 0u64;
+    let mut model = String::new();
+    let mut seen_session_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for item in stream {
+        let parsed = match item {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        let attrs = parsed.get("attributes").unwrap_or(&parsed);
+
+        let event_name = attrs.get("event.name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
+        if event_name == "gemini_cli.api_response" {
+            let ts = attrs.get("event.timestamp")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let date = ts.get(..10).unwrap_or("").to_string();
+            if !date.is_empty() && date < cutoff_str { continue; }
+
+            let input = attrs.get("input_token_count").and_then(|v| v.as_u64()).unwrap_or(0);
+            let output = attrs.get("output_token_count").and_then(|v| v.as_u64()).unwrap_or(0);
+            let cached = attrs.get("cached_content_token_count").and_then(|v| v.as_u64()).unwrap_or(0);
+
+            if model.is_empty() {
+                if let Some(m) = attrs.get("model").and_then(|v| v.as_str()) {
+                    model = m.to_string();
+                }
+            }
+
+            total_input += input;
+            total_output += output;
+            total_cache_read += cached;
+            total_messages += 1;
+
+            if !date.is_empty() {
+                let entry = daily_map.entry(date.clone()).or_insert_with(|| ClaudeDailyStats {
+                    date: date.clone(),
+                    input_tokens: 0, output_tokens: 0,
+                    cache_read_tokens: 0, cache_write_tokens: 0,
+                    messages: 0, sessions: 0,
+                });
+                entry.input_tokens += input;
+                entry.output_tokens += output;
+                entry.cache_read_tokens += cached;
+                entry.messages += 1;
+            }
+        } else if event_name == "gemini_cli.config" {
+            let session_id = attrs.get("session.id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            if !session_id.is_empty() && seen_session_ids.insert(session_id) {
+                total_sessions += 1;
+                let ts = attrs.get("event.timestamp")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let date = ts.get(..10).unwrap_or("").to_string();
+                if !date.is_empty() && date >= cutoff_str {
+                    let entry = daily_map.entry(date.clone()).or_insert_with(|| ClaudeDailyStats {
+                        date: date.clone(),
+                        input_tokens: 0, output_tokens: 0,
+                        cache_read_tokens: 0, cache_write_tokens: 0,
+                        messages: 0, sessions: 0,
+                    });
+                    entry.sessions += 1;
+                }
+            }
+        }
+    }
+
+    // Fill in all 14 days so the chart shows a complete timeline
+    let now_local = chrono::Local::now();
+    let mut daily_stats: Vec<ClaudeDailyStats> = Vec::with_capacity(14);
+    for i in (0..14).rev() {
+        let day = (now_local - chrono::Duration::days(i)).format("%Y-%m-%d").to_string();
+        let entry = daily_map.remove(&day).unwrap_or(ClaudeDailyStats {
+            date: day.clone(),
+            input_tokens: 0, output_tokens: 0,
+            cache_read_tokens: 0, cache_write_tokens: 0,
+            messages: 0, sessions: 0,
+        });
+        daily_stats.push(entry);
+    }
+
+    Ok(ClaudeStats {
+        total_input_tokens: total_input,
+        total_output_tokens: total_output,
+        total_cache_read_tokens: total_cache_read,
+        total_cache_write_tokens: 0,
+        total_messages,
+        total_sessions,
+        daily_stats,
+        model,
+    })
+}
+
 fn collect_hermes_stats() -> Result<ClaudeStats, String> {
     let home = dirs::home_dir().ok_or("no home dir")?;
     let db_path = home.join(".hermes").join("state.db");
@@ -7663,7 +7810,7 @@ async fn get_claude_stats(source: Option<String>) -> Result<ClaudeStats, String>
     }
 
     if source == "gemini" {
-        return Ok(empty_claude_stats());
+        return collect_gemini_stats();
     }
 
     if source == "hermes" {
@@ -8413,7 +8560,27 @@ async fn activate_app(app_name: String) -> Result<String, String> {
             .map_err(|e| e.to_string())?;
         Ok(format!("Activated {}", app_name))
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        let name_lower = app_name.to_lowercase();
+        let exe_candidates: Vec<String> = match name_lower.as_str() {
+            "lark" => vec!["lark.exe".into(), "feishu.exe".into()],
+            "telegram" => vec!["telegram.exe".into()],
+            "discord" => vec!["discord.exe".into()],
+            "slack" => vec!["slack.exe".into()],
+            "wechat" => vec!["wechat.exe".into(), "weixin.exe".into()],
+            "whatsapp" => vec!["whatsapp.exe".into()],
+            "mattermost" => vec!["mattermost.exe".into()],
+            _ => vec![format!("{}.exe", name_lower)],
+        };
+        let refs: Vec<&str> = exe_candidates.iter().map(|s| s.as_str()).collect();
+        if let Some(p) = find_pid_by_exe_names(&refs) {
+            activate_window_by_pid(p);
+            return Ok(format!("Activated {}", app_name));
+        }
+        Err(format!("Could not find running process for {}", app_name))
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         Err(format!("activate_app not supported on this platform"))
     }
@@ -8935,6 +9102,102 @@ fn find_running_claude_desktop_pid() -> Option<u32> {
                             break;
                         }
                     }
+                }
+                if Process32NextW(snapshot, &mut entry).is_err() {
+                    break;
+                }
+            }
+        }
+        let _ = CloseHandle(snapshot);
+    }
+    result
+}
+
+/// Walk up the process tree from `pid` to find the nearest ancestor that owns
+/// a visible window (i.e. the terminal hosting a CLI process like gemini/hermes).
+#[cfg(target_os = "windows")]
+fn find_ancestor_window_pid(pid: u32) -> Option<u32> {
+    use windows::Win32::Foundation::{BOOL, HWND, LPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        EnumWindows, GetWindowTextLengthW, GetWindowThreadProcessId, IsWindowVisible,
+    };
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+    };
+    use windows::Win32::Foundation::CloseHandle;
+
+    fn pid_has_visible_window(target: u32) -> bool {
+        struct Ctx { target: u32, found: bool }
+        extern "system" fn cb(hwnd: HWND, lparam: LPARAM) -> BOOL {
+            unsafe {
+                let ctx = &mut *(lparam.0 as *mut Ctx);
+                if !IsWindowVisible(hwnd).as_bool() { return BOOL(1); }
+                let mut p: u32 = 0;
+                GetWindowThreadProcessId(hwnd, Some(&mut p));
+                if p == ctx.target && GetWindowTextLengthW(hwnd) > 0 {
+                    ctx.found = true;
+                    return BOOL(0);
+                }
+                BOOL(1)
+            }
+        }
+        let mut ctx = Ctx { target, found: false };
+        unsafe { let _ = EnumWindows(Some(cb), LPARAM(&mut ctx as *mut Ctx as isize)); }
+        ctx.found
+    }
+
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0).ok()? };
+    let mut entries: Vec<(u32, u32)> = Vec::new();
+    let mut entry = PROCESSENTRY32W {
+        dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+        ..Default::default()
+    };
+    unsafe {
+        if Process32FirstW(snapshot, &mut entry).is_ok() {
+            entries.push((entry.th32ProcessID, entry.th32ParentProcessID));
+            while Process32NextW(snapshot, &mut entry).is_ok() {
+                entries.push((entry.th32ProcessID, entry.th32ParentProcessID));
+            }
+        }
+        let _ = CloseHandle(snapshot);
+    }
+
+    let mut current = pid;
+    for _ in 0..10 {
+        let parent = entries.iter().find(|(p, _)| *p == current).map(|(_, pp)| *pp)?;
+        if parent == 0 || parent == current { return None; }
+        if pid_has_visible_window(parent) {
+            return Some(parent);
+        }
+        current = parent;
+    }
+    None
+}
+
+/// Find the first running process whose exe name (case-insensitive) matches
+/// any of the given names. Returns its PID so we can activate its window.
+#[cfg(target_os = "windows")]
+fn find_pid_by_exe_names(exe_names: &[&str]) -> Option<u32> {
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+    };
+    use windows::Win32::Foundation::CloseHandle;
+
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0).ok()? };
+    let mut entry = PROCESSENTRY32W {
+        dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+        ..Default::default()
+    };
+    let mut result = None;
+    unsafe {
+        if Process32FirstW(snapshot, &mut entry).is_ok() {
+            loop {
+                let name = String::from_utf16_lossy(
+                    &entry.szExeFile[..entry.szExeFile.iter().position(|&c| c == 0).unwrap_or(entry.szExeFile.len())]
+                ).to_lowercase();
+                if exe_names.iter().any(|e| name == e.to_lowercase()) {
+                    result = Some(entry.th32ProcessID);
+                    break;
                 }
                 if Process32NextW(snapshot, &mut entry).is_err() {
                     break;
@@ -9721,6 +9984,66 @@ end tell"#,
                 return Ok("Activated Claude Desktop window".to_string());
             }
         }
+
+        if let Some(p) = pid {
+            if let Some(parent) = find_ancestor_window_pid(p) {
+                activate_window_by_pid(parent);
+                return Ok(format!("Activated terminal for PID {}", p));
+            }
+            activate_window_by_pid(p);
+            return Ok(format!("Activated window for PID {}", p));
+        }
+
+        if source == "codex" {
+            let exe_names = &["codex.exe", "code.exe"];
+            if let Some(p) = find_pid_by_exe_names(exe_names) {
+                activate_window_by_pid(p);
+                return Ok("Activated Codex window".to_string());
+            }
+        } else if source == "gemini" {
+            let terminal_exes = &[
+                "windowsterminal.exe", "cmd.exe", "powershell.exe", "pwsh.exe",
+                "alacritty.exe", "wezterm-gui.exe", "hyper.exe",
+            ];
+            if let Some(p) = find_pid_by_exe_names(terminal_exes) {
+                activate_window_by_pid(p);
+                return Ok("Activated terminal for Gemini session".to_string());
+            }
+        } else if source == "hermes" {
+            let plat = platform.as_deref().unwrap_or("unknown").to_lowercase();
+            let app_exe: Option<&[&str]> = if plat.contains("feishu") || plat.contains("lark") {
+                Some(&["lark.exe", "feishu.exe"])
+            } else if plat.contains("telegram") {
+                Some(&["telegram.exe"])
+            } else if plat.contains("discord") {
+                Some(&["discord.exe"])
+            } else if plat.contains("slack") {
+                Some(&["slack.exe"])
+            } else if plat.contains("wechat") || plat.contains("weixin") {
+                Some(&["wechat.exe", "weixin.exe"])
+            } else if plat.contains("whatsapp") {
+                Some(&["whatsapp.exe"])
+            } else if plat.contains("mattermost") {
+                Some(&["mattermost.exe"])
+            } else {
+                None
+            };
+            if let Some(exes) = app_exe {
+                if let Some(p) = find_pid_by_exe_names(exes) {
+                    activate_window_by_pid(p);
+                    return Ok(format!("Activated {} window", plat));
+                }
+            }
+            let terminal_exes = &[
+                "windowsterminal.exe", "cmd.exe", "powershell.exe", "pwsh.exe",
+                "alacritty.exe", "wezterm-gui.exe",
+            ];
+            if let Some(p) = find_pid_by_exe_names(terminal_exes) {
+                activate_window_by_pid(p);
+                return Ok("Activated terminal for Hermes session".to_string());
+            }
+        }
+
         Ok("No action".to_string())
     }
 
@@ -12316,6 +12639,23 @@ try {
     }
     settings["tools"]["enableHooks"] = serde_json::json!(true);
 
+    // Enable local telemetry so we can collect token usage stats.
+    // Uses ~/.gemini/telemetry.jsonl as the output file.
+    let telemetry = settings.get("telemetry").cloned().unwrap_or(serde_json::json!({}));
+    let already_enabled = telemetry.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+    if !already_enabled {
+        let telem_outfile = gemini_dir.join("telemetry.jsonl").to_string_lossy().replace('\\', "/");
+        settings["telemetry"] = serde_json::json!({
+            "enabled": true,
+            "target": "local",
+            "outfile": telem_outfile,
+            "logPrompts": false,
+        });
+    } else if telemetry.get("outfile").is_none() {
+        let telem_outfile = gemini_dir.join("telemetry.jsonl").to_string_lossy().replace('\\', "/");
+        settings["telemetry"]["outfile"] = serde_json::json!(telem_outfile);
+    }
+
     let json_str = serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?;
     std::fs::write(&settings_path, json_str).map_err(|e| e.to_string())?;
     log::info!("[gemini_hooks] installed hooks to {:?}", settings_path);
@@ -12629,21 +12969,34 @@ def handle(event_type, context):
 
 /// Try to find the hermes binary on PATH or known locations.
 fn which_hermes() -> Option<std::path::PathBuf> {
-    // Check PATH first
-    if let Ok(output) = std::process::Command::new("which").arg("hermes").output() {
+    #[cfg(unix)]
+    let which_cmd = "which";
+    #[cfg(windows)]
+    let which_cmd = "where.exe";
+
+    if let Ok(output) = std::process::Command::new(which_cmd).arg("hermes").output() {
         if output.status.success() {
-            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let path = String::from_utf8_lossy(&output.stdout).lines().next().unwrap_or("").trim().to_string();
             if !path.is_empty() {
                 return Some(std::path::PathBuf::from(path));
             }
         }
     }
-    // Known locations
+
     if let Some(home) = dirs::home_dir() {
-        let candidates = [
+        #[cfg(unix)]
+        let candidates = vec![
             home.join(".local/bin/hermes"),
             home.join(".hermes/hermes-agent/venv/bin/hermes"),
         ];
+        #[cfg(windows)]
+        let candidates = vec![
+            home.join(".local\\bin\\hermes.exe"),
+            home.join(".hermes\\hermes-agent\\venv\\Scripts\\hermes.exe"),
+            home.join("AppData\\Local\\Programs\\hermes\\hermes.exe"),
+            home.join("scoop\\shims\\hermes.exe"),
+        ];
+
         for c in &candidates {
             if c.exists() {
                 return Some(c.clone());
@@ -12906,11 +13259,16 @@ def check_active(sid):
         row = db_conn.execute('SELECT ended_at FROM sessions WHERE id=?', (sid,)).fetchone()
         if row:
             ended = row[0]
-            if ended and isinstance(ended, (int,float)) and ended > 0:
+            if ended is not None and ended != 0 and ended != '' and ended != 'None':
                 return False
         last_ts = db_conn.execute('SELECT MAX(timestamp) FROM messages WHERE session_id=?', (sid,)).fetchone()[0]
-        if last_ts and (now - last_ts) > 120:
-            return False
+        if last_ts:
+            if isinstance(last_ts, (int,float)) and (now - last_ts) > 120:
+                return False
+        else:
+            started = db_conn.execute('SELECT started_at FROM sessions WHERE id=?', (sid,)).fetchone()
+            if started and started[0] and isinstance(started[0], (int,float)) and (now - started[0]) > 300:
+                return False
     except: pass
     return True
 # Active gateway sessions from sessions.json
@@ -12921,7 +13279,7 @@ if os.path.exists(sj):
             sid = v.get('session_id','')
             if sid: seen.add(sid)
             plat = v.get('platform','')
-            if plat in ('cli','terminal',''): continue
+            if plat in ('cli','terminal','','cron'): continue
             updated = v.get('updated_at','')
             active = check_active(sid) if sid else True
             results.append({'sessionId': sid, 'platform': plat, 'updatedAt': updated,
@@ -12939,16 +13297,20 @@ if db_conn:
             sid = r[0]
             if sid in seen: continue
             plat_db = r[1] or ''
-            if plat_db in ('cli','terminal',''): continue
+            if plat_db in ('cli','terminal','','cron'): continue
             seen.add(sid)
             ended = r[4]
-            active = ended is None or (isinstance(ended, (int,float)) and ended == 0)
+            active = ended is None or ended == 0 or ended == '' or ended == 'None'
             if active:
                 try:
                     last_ts = db_conn.execute(
                         'SELECT MAX(timestamp) FROM messages WHERE session_id=?', (sid,)).fetchone()[0]
-                    if last_ts and (now - last_ts) > 120:
+                    if last_ts and isinstance(last_ts, (int,float)) and (now - last_ts) > 120:
                         active = False
+                    elif not last_ts:
+                        sa = r[3]
+                        if sa and isinstance(sa, (int,float)) and (now - sa) > 300:
+                            active = False
                 except: pass
             results.append({'sessionId': sid, 'platform': r[1] or '', 'model': r[2] or '',
                             'startedAt': r[3], 'messageCount': r[5] or 0,
