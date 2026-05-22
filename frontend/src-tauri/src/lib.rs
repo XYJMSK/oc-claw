@@ -13261,19 +13261,16 @@ if os.path.exists(db):
 def check_active(sid):
     if not db_conn: return True
     try:
-        row = db_conn.execute('SELECT ended_at FROM sessions WHERE id=?', (sid,)).fetchone()
-        if row:
-            ended = row[0]
-            if ended is not None and ended != 0 and ended != '' and ended != 'None':
-                return False
+        row = db_conn.execute('SELECT ended_at, started_at FROM sessions WHERE id=?', (sid,)).fetchone()
+        if not row: return False
+        ended_at, started_at = row
+        if ended_at is not None:
+            return False
         last_ts = db_conn.execute('SELECT MAX(timestamp) FROM messages WHERE session_id=?', (sid,)).fetchone()[0]
-        if last_ts:
-            if isinstance(last_ts, (int,float)) and (now - last_ts) > 120:
-                return False
-        else:
-            started = db_conn.execute('SELECT started_at FROM sessions WHERE id=?', (sid,)).fetchone()
-            if started and started[0] and isinstance(started[0], (int,float)) and (now - started[0]) > 300:
-                return False
+        if last_ts and (now - last_ts) > 180:
+            return False
+        if not last_ts and started_at and (now - started_at) > 300:
+            return False
     except: pass
     return True
 # Active gateway sessions from sessions.json
@@ -13305,17 +13302,15 @@ if db_conn:
             if plat_db in ('cli','terminal','','cron'): continue
             seen.add(sid)
             ended = r[4]
-            active = ended is None or ended == 0 or ended == '' or ended == 'None'
+            active = ended is None
             if active:
                 try:
                     last_ts = db_conn.execute(
                         'SELECT MAX(timestamp) FROM messages WHERE session_id=?', (sid,)).fetchone()[0]
-                    if last_ts and isinstance(last_ts, (int,float)) and (now - last_ts) > 120:
+                    if last_ts and (now - last_ts) > 180:
                         active = False
-                    elif not last_ts:
-                        sa = r[3]
-                        if sa and isinstance(sa, (int,float)) and (now - sa) > 300:
-                            active = False
+                    elif not last_ts and r[3] and (now - r[3]) > 300:
+                        active = False
                 except: pass
             results.append({'sessionId': sid, 'platform': r[1] or '', 'model': r[2] or '',
                             'startedAt': r[3], 'messageCount': r[5] or 0,
