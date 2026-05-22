@@ -2224,6 +2224,7 @@ export default function Mini() {
               const conn = remoteHermesConns[ci]
               const label = `${conn.user}@${conn.host}`
               for (const rs of r.value) {
+                if (rs.debug) console.warn('[hermes-remote]', rs.sessionId, 'active=', rs.active, rs.debug)
                 if (!rs.active && !rs.updatedAt && !rs.startedAt) continue
                 sessions.push({
                   sessionId: `ssh:${conn.host}:${rs.sessionId}`,
@@ -2240,7 +2241,9 @@ export default function Mini() {
                 })
               }
             }
-          } catch {}
+          } catch (e) {
+            console.warn('[hermes-remote] poll error:', e)
+          }
         }
 
         setClaudeSessions(sessions)

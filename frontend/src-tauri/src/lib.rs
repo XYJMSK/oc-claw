@@ -89,7 +89,7 @@ fn ssh_backoff_remaining(host_key: &str) -> Option<u64> {
     let map = ssh_backoff_map().lock().unwrap_or_else(|e| e.into_inner());
     let state = map.get(host_key)?;
     if state.fail_count == 0 { return None; }
-    let cooldown = std::cmp::min(15u64 * 2u64.pow(state.fail_count.saturating_sub(1)), 300);
+    let cooldown = std::cmp::min(10u64 * 2u64.pow(state.fail_count.saturating_sub(1)), 60);
     let elapsed = unix_now().saturating_sub(state.fail_epoch);
     if elapsed < cooldown { Some(cooldown - elapsed) } else { None }
 }
@@ -159,7 +159,7 @@ mod win_ssh_mux {
     }
 
     fn session_lock(host_key: &str) -> Arc<TokioMutex<Option<MuxChild>>> {
-        let mut map = mux_map().lock().unwrap();
+        let mut map = mux_map().lock().unwrap_or_else(|e| e.into_inner());
         map.entry(host_key.to_string())
             .or_insert_with(|| Arc::new(TokioMutex::new(None)))
             .clone()
@@ -321,7 +321,7 @@ mod win_ssh_mux {
     /// Kill all persistent subprocesses.
     pub async fn kill_all() {
         let keys: Vec<String> = {
-            mux_map().lock().unwrap().keys().cloned().collect()
+            mux_map().lock().unwrap_or_else(|e| e.into_inner()).keys().cloned().collect()
         };
         for key in keys {
             let lock = session_lock(&key);
@@ -828,6 +828,7 @@ fn ssh_control_path(ssh_user: &str, ssh_host: &str) -> String {
 async fn ensure_ssh_master(ssh_host: &str, ssh_user: &str) -> Result<(), String> {
     let host_key = format!("{}@{}", ssh_user, ssh_host);
     if let Some(remaining) = ssh_backoff_remaining(&host_key) {
+        eprintln!("[ssh] {} backing off, retry in {}s", host_key, remaining);
         return Err(format!("SSH connection to {} backing off, retry in {}s", host_key, remaining));
     }
 
@@ -13296,9 +13297,16 @@ if os.path.exists(sj):
             if plat in ('cli','terminal','','cron'): continue
             updated = v.get('updated_at','')
             active = check_active(sid) if sid else True
+            last_msg_info = ''
+            if db_conn and sid:
+                try:
+                    lr = db_conn.execute('SELECT role, tool_calls, timestamp FROM messages WHERE session_id=? ORDER BY timestamp DESC LIMIT 1', (sid,)).fetchone()
+                    if lr: last_msg_info = 'role=%s tc=%s age=%.0f' % (lr[0], bool(lr[1]), now-lr[2] if lr[2] else -1)
+                    else: last_msg_info = 'no_msgs'
+                except: last_msg_info = 'err'
             results.append({'sessionId': sid, 'platform': plat, 'updatedAt': updated,
                             'displayName': v.get('display_name',''), 'active': active, 'source': 'hermes',
-                            'startedAt': now})
+                            'startedAt': now, 'debug': last_msg_info})
     except: pass
 # Recent sessions from state.db (last 2h)
 if db_conn:
@@ -13332,6 +13340,12 @@ print(json.dumps(results))
     let trimmed = output.trim();
     let sessions: Vec<serde_json::Value> = serde_json::from_str(trimmed)
         .map_err(|e| format!("parse hermes remote sessions: {}", e))?;
+    for s in &sessions {
+        let sid = s.get("sessionId").and_then(|v| v.as_str()).unwrap_or("?");
+        let active = s.get("active").and_then(|v| v.as_bool()).unwrap_or(false);
+        let debug = s.get("debug").and_then(|v| v.as_str()).unwrap_or("");
+        eprintln!("[hermes-remote] {} active={} {}", &sid[..sid.len().min(12)], active, debug);
+    }
     Ok(sessions)
 }
 
