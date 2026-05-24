@@ -13246,93 +13246,88 @@ print(json.dumps(rows))
 #[tauri::command]
 async fn get_hermes_remote_sessions(ssh_host: String, ssh_user: String) -> Result<Vec<serde_json::Value>, String> {
     let py_script = r#"
-import json, os, time
-sj = os.path.expanduser('~/.hermes/sessions/sessions.json')
-db = os.path.expanduser('~/.hermes/state.db')
+import json, os, time, glob
+hermes_home = os.path.expanduser('~/.hermes')
+# Collect all profile paths: default + named profiles
+profile_dirs = [hermes_home]
+profiles_root = os.path.join(hermes_home, 'profiles')
+if os.path.isdir(profiles_root):
+    for name in os.listdir(profiles_root):
+        p = os.path.join(profiles_root, name)
+        if os.path.isdir(p):
+            profile_dirs.append(p)
 seen = set()
 results = []
 now = time.time()
-# Helper: check if session is actually active via DB
-db_conn = None
-if os.path.exists(db):
-    try:
-        import sqlite3
-        db_conn = sqlite3.connect(db)
-    except: pass
-def check_active(sid):
-    if not db_conn: return True
-    try:
-        row = db_conn.execute('SELECT ended_at, started_at FROM sessions WHERE id=?', (sid,)).fetchone()
-        if not row:
-            return True
-        ended_at, started_at = row
-        if ended_at is not None:
-            return False
-        last = db_conn.execute(
-            'SELECT role, tool_calls, timestamp FROM messages WHERE session_id=? ORDER BY timestamp DESC LIMIT 1',
-            (sid,)).fetchone()
-        if not last:
-            return True
-        role, tool_calls, ts = last
-        age = now - ts if ts else 9999
-        if role in ('user', 'human'):
-            return True
-        if role == 'tool':
-            return True
-        if role == 'assistant':
-            if tool_calls:
-                return True
-            return age < 5
-        return age < 10
-    except: pass
-    return True
-# Active gateway sessions from sessions.json
-if os.path.exists(sj):
-    try:
-        data = json.load(open(sj))
-        for key, v in data.items():
-            sid = v.get('session_id','')
-            if sid: seen.add(sid)
-            plat = v.get('platform','')
-            if plat in ('cron',): continue
-            updated = v.get('updated_at','')
-            active = check_active(sid) if sid else True
-            last_msg_info = ''
-            if db_conn and sid:
-                try:
-                    lr = db_conn.execute('SELECT role, tool_calls, timestamp FROM messages WHERE session_id=? ORDER BY timestamp DESC LIMIT 1', (sid,)).fetchone()
-                    if lr: last_msg_info = 'role=%s tc=%s age=%.0f' % (lr[0], bool(lr[1]), now-lr[2] if lr[2] else -1)
-                    else: last_msg_info = 'no_msgs'
-                except: last_msg_info = 'err'
-            results.append({'sessionId': sid, 'platform': plat, 'updatedAt': updated,
-                            'displayName': v.get('display_name',''), 'active': active, 'source': 'hermes',
-                            'startedAt': now, 'debug': last_msg_info})
-    except: pass
-# Recent sessions from state.db (last 2h)
-if db_conn:
-    try:
-        cutoff = now - 7200
-        cur = db_conn.execute(
-            'SELECT id, source, model, started_at, ended_at, message_count, input_tokens, output_tokens '
-            'FROM sessions WHERE started_at > ? ORDER BY started_at DESC LIMIT 20', (cutoff,))
-        for r in cur.fetchall():
-            sid = r[0]
-            if sid in seen: continue
-            plat_db = r[1] or ''
-            if plat_db in ('cron',): continue
-            seen.add(sid)
-            ended = r[4]
-            active = ended is None
-            if active:
-                active = check_active(sid)
-            results.append({'sessionId': sid, 'platform': r[1] or '', 'model': r[2] or '',
-                            'startedAt': r[3], 'messageCount': r[5] or 0,
-                            'inputTokens': r[6] or 0, 'outputTokens': r[7] or 0,
-                            'active': active, 'source': 'hermes'})
-    except: pass
-if db_conn:
-    try: db_conn.close()
-    except: pass
+for _pdir in profile_dirs:
+    sj = os.path.join(_pdir, 'sessions', 'sessions.json')
+    db = os.path.join(_pdir, 'state.db')
+    _profile_name = os.path.basename(_pdir) if _pdir != hermes_home else 'default'
+    db_conn = None
+    if os.path.exists(db):
+        try:
+            import sqlite3
+            db_conn = sqlite3.connect(db)
+        except: pass
+    def check_active(sid):
+        if not db_conn: return True
+        try:
+            row = db_conn.execute('SELECT ended_at, started_at FROM sessions WHERE id=?', (sid,)).fetchone()
+            if not row: return True
+            ended_at, started_at = row
+            if ended_at is not None: return False
+            last = db_conn.execute('SELECT role, tool_calls, timestamp FROM messages WHERE session_id=? ORDER BY timestamp DESC LIMIT 1', (sid,)).fetchone()
+            if not last: return True
+            role, tool_calls, ts = last
+            age = now - ts if ts else 9999
+            if role in ('user', 'human'): return True
+            if role == 'tool': return True
+            if role == 'assistant':
+                return bool(tool_calls) or age < 5
+            return age < 10
+        except: pass
+        return True
+    _pfx = '' if _profile_name == 'default' else _profile_name + ':'
+    if os.path.exists(sj):
+        try:
+            data = json.load(open(sj))
+            for key, v in data.items():
+                sid = v.get('session_id','')
+                if sid: seen.add(sid)
+                plat = v.get('platform','')
+                if plat in ('cron',): continue
+                updated = v.get('updated_at','')
+                active = check_active(sid) if sid else True
+                label = plat
+                if _profile_name != 'default': label = _profile_name + ('/' + plat if plat else '')
+                results.append({'sessionId': _pfx + sid, 'platform': label, 'updatedAt': updated,
+                                'displayName': v.get('display_name',''), 'active': active, 'source': 'hermes',
+                                'startedAt': now})
+        except: pass
+    if db_conn:
+        try:
+            cutoff = now - 7200
+            cur = db_conn.execute(
+                'SELECT id, source, model, started_at, ended_at, message_count, input_tokens, output_tokens '
+                'FROM sessions WHERE started_at > ? ORDER BY started_at DESC LIMIT 20', (cutoff,))
+            for r in cur.fetchall():
+                sid = r[0]
+                if sid in seen: continue
+                plat_db = r[1] or ''
+                if plat_db in ('cron',): continue
+                seen.add(sid)
+                active = r[4] is None
+                if active: active = check_active(sid)
+                label = plat_db
+                if _profile_name != 'default': label = _profile_name + ('/' + plat_db if plat_db else '')
+                results.append({'sessionId': _pfx + sid, 'platform': label, 'model': r[2] or '',
+                                'startedAt': r[3], 'messageCount': r[5] or 0,
+                                'inputTokens': r[6] or 0, 'outputTokens': r[7] or 0,
+                                'active': active, 'source': 'hermes'})
+        except: pass
+    if db_conn:
+        try: db_conn.close()
+        except: pass
 print(json.dumps(results))
 "#;
     let cmd = format!("python3 -c {}", shell_escape_single(py_script));
