@@ -13825,15 +13825,24 @@ if not result["enabled"]:
 result["restarted"] = []
 if hermes_bin:
     import time
-    # Kill existing gateway processes first (use pgrep to find exact PIDs, avoid killing ourselves)
+    # Kill existing gateway processes by matching exact command patterns
+    # Use /proc to find real gateway processes (not our SSH python session)
     try:
         my_pid = os.getpid()
-        out = subprocess.run(['pgrep', '-f', 'hermes.*gateway'], capture_output=True, text=True, timeout=3)
-        if out.returncode == 0:
-            for line in out.stdout.strip().split('\n'):
-                pid = line.strip()
-                if pid and int(pid) != my_pid:
-                    subprocess.run(['kill', pid], capture_output=True, timeout=2)
+        my_ppid = os.getppid()
+        exclude_pids = {my_pid, my_ppid}
+        for pid_dir in glob.glob('/proc/[0-9]*'):
+            try:
+                pid = int(os.path.basename(pid_dir))
+                if pid in exclude_pids:
+                    continue
+                with open(os.path.join(pid_dir, 'cmdline'), 'rb') as f:
+                    cmdline = f.read().decode('utf-8', errors='ignore')
+                # Match actual hermes gateway processes (null-separated args)
+                if 'hermes' in cmdline and 'gateway' in cmdline and 'python' not in cmdline:
+                    subprocess.run(['kill', str(pid)], capture_output=True, timeout=2)
+            except (PermissionError, FileNotFoundError, ProcessLookupError, ValueError):
+                continue
         time.sleep(1)
     except: pass
     # Restart default gateway (Popen so we don't block)
