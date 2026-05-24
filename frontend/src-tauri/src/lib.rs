@@ -13384,13 +13384,12 @@ for _pdir in profile_dirs:
             with open(_sf) as _f:
                 _st = json.load(_f)
             if isinstance(_st, dict):
-                # Filter: only keep sessions with recent events (within 60s)
+                # Keep all sessions — active state is determined by last event's
+                # claudeStatus, not by time. Same approach as OpenClaw's JSONL tail.
                 _filtered = {}
                 for _sid, _evts in _st.items():
                     if isinstance(_evts, list) and _evts:
-                        _last_ts = _evts[-1].get('timestamp', 0)
-                        if (now - _last_ts) < 60:
-                            _filtered[_sid] = _evts
+                        _filtered[_sid] = _evts
                 if _filtered:
                     _ooclaw_status[_pname] = _filtered
     except: pass
