@@ -10923,12 +10923,18 @@ async fn get_hermes_remote_recent_activity(ssh_host: String, ssh_user: String, s
     let sid_escaped = session_id.replace('\'', "");
     let py_script = format!(r#"
 import json, os, sqlite3, sys
-db = os.path.expanduser('~/.hermes/state.db')
+raw_sid = '{sid}'
+profile = 'default'
+if ':' in raw_sid:
+    profile, raw_sid = raw_sid.split(':', 1)
+if profile == 'default':
+    db = os.path.expanduser('~/.hermes/state.db')
+else:
+    db = os.path.expanduser('~/.hermes/profiles/' + profile + '/state.db')
 if not os.path.exists(db):
     print('[]')
     exit(0)
 conn = sqlite3.connect(db)
-sid = '{sid}'
 def _follow_chain(s):
     cur = s
     for _ in range(20):
@@ -10936,16 +10942,12 @@ def _follow_chain(s):
         if not child: break
         cur = child[0]
     return cur
-if sid:
-    sid = _follow_chain(sid)
+sid = _follow_chain(raw_sid) if raw_sid else ''
 _q = ('SELECT role, substr(content,1,200), tool_name, tool_calls, tool_call_id, timestamp '
       'FROM messages WHERE role IN ("user","assistant","tool")')
 if sid:
     cur = conn.execute(_q + ' AND session_id = ? ORDER BY timestamp DESC LIMIT 30', (sid,))
     _rows = cur.fetchall()
-    if not _rows:
-        cur = conn.execute(_q + ' ORDER BY timestamp DESC LIMIT 30')
-        _rows = cur.fetchall()
 else:
     cur = conn.execute(_q + ' ORDER BY timestamp DESC LIMIT 30')
     _rows = cur.fetchall()
@@ -13313,7 +13315,7 @@ for _pdir in profile_dirs:
             data = json.load(open(sj))
             for key, v in data.items():
                 sid = v.get('session_id','')
-                if sid: seen.add(sid)
+                if sid: seen.add(_pfx + sid)
                 plat = v.get('platform','')
                 if plat in ('cron',): continue
                 updated = v.get('updated_at','')
@@ -13327,37 +13329,30 @@ for _pdir in profile_dirs:
                         lts = db_conn.execute("SELECT MAX(timestamp) FROM messages WHERE session_id=? AND role NOT IN ('session_meta','system','metadata')", (_lsid2,)).fetchone()[0]
                         if lts: last_ts = lts
                     except: pass
-                _dbg = ''
-                if db_conn and sid:
-                    try:
-                        _lsid = _find_latest_session(sid)
-                        lr = db_conn.execute("SELECT role, tool_calls, timestamp FROM messages WHERE session_id=? AND role NOT IN ('session_meta','system','metadata') ORDER BY timestamp DESC LIMIT 1", (_lsid,)).fetchone()
-                        if lr: _dbg = 'role=%s tc=%s age=%.0f sid=%s' % (lr[0], bool(lr[1]), now-lr[2] if lr[2] else -1, _lsid[:12])
-                        else: _dbg = 'no_msgs sid=%s' % _lsid[:12]
-                    except: _dbg = 'err'
                 results.append({'sessionId': _pfx + sid, 'platform': label, 'updatedAt': updated,
                                 'displayName': v.get('display_name',''), 'active': active, 'source': 'hermes',
-                                'startedAt': last_ts, 'debug': _dbg})
+                                'startedAt': last_ts})
         except: pass
     if db_conn:
         try:
             cutoff = now - 7200
             cur = db_conn.execute(
                 'SELECT id, source, model, started_at, ended_at, message_count, input_tokens, output_tokens '
-                'FROM sessions WHERE started_at > ? ORDER BY started_at DESC LIMIT 20', (cutoff,))
+                'FROM sessions WHERE started_at > ? AND parent_session_id IS NULL ORDER BY started_at DESC LIMIT 20', (cutoff,))
             for r in cur.fetchall():
                 sid = r[0]
-                if sid in seen: continue
+                if (_pfx + sid) in seen: continue
                 plat_db = r[1] or ''
                 if plat_db in ('cron',): continue
-                seen.add(sid)
+                seen.add(_pfx + sid)
+                latest_sid = _find_latest_session(sid)
                 active = r[4] is None
                 if active: active = check_active(sid)
                 label = plat_db
                 if _profile_name != 'default': label = _profile_name + ('/' + plat_db if plat_db else '')
                 db_last_ts = r[3]
                 try:
-                    lts = db_conn.execute('SELECT MAX(timestamp) FROM messages WHERE session_id=?', (sid,)).fetchone()[0]
+                    lts = db_conn.execute("SELECT MAX(timestamp) FROM messages WHERE session_id=? AND role NOT IN ('session_meta','system','metadata')", (latest_sid,)).fetchone()[0]
                     if lts: db_last_ts = lts
                 except: pass
                 results.append({'sessionId': _pfx + sid, 'platform': label, 'model': r[2] or '',
@@ -13375,12 +13370,6 @@ print(json.dumps(results))
     let trimmed = output.trim();
     let sessions: Vec<serde_json::Value> = serde_json::from_str(trimmed)
         .map_err(|e| format!("parse hermes remote sessions: {}", e))?;
-    for s in &sessions {
-        let sid = s.get("sessionId").and_then(|v| v.as_str()).unwrap_or("?");
-        let active = s.get("active").and_then(|v| v.as_bool()).unwrap_or(false);
-        let debug = s.get("debug").and_then(|v| v.as_str()).unwrap_or("");
-        eprintln!("[hermes-remote] {} active={} {}", &sid[..sid.len().min(12)], active, debug);
-    }
     Ok(sessions)
 }
 
