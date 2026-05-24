@@ -13300,9 +13300,15 @@ for _pdir in profile_dirs:
                 active = check_active(sid) if sid else True
                 label = plat
                 if _profile_name != 'default': label = _profile_name + ('/' + plat if plat else '')
+                last_ts = now
+                if db_conn and sid:
+                    try:
+                        lts = db_conn.execute('SELECT MAX(timestamp) FROM messages WHERE session_id=?', (sid,)).fetchone()[0]
+                        if lts: last_ts = lts
+                    except: pass
                 results.append({'sessionId': _pfx + sid, 'platform': label, 'updatedAt': updated,
                                 'displayName': v.get('display_name',''), 'active': active, 'source': 'hermes',
-                                'startedAt': now})
+                                'startedAt': last_ts})
         except: pass
     if db_conn:
         try:
@@ -13320,8 +13326,13 @@ for _pdir in profile_dirs:
                 if active: active = check_active(sid)
                 label = plat_db
                 if _profile_name != 'default': label = _profile_name + ('/' + plat_db if plat_db else '')
+                db_last_ts = r[3]
+                try:
+                    lts = db_conn.execute('SELECT MAX(timestamp) FROM messages WHERE session_id=?', (sid,)).fetchone()[0]
+                    if lts: db_last_ts = lts
+                except: pass
                 results.append({'sessionId': _pfx + sid, 'platform': label, 'model': r[2] or '',
-                                'startedAt': r[3], 'messageCount': r[5] or 0,
+                                'startedAt': db_last_ts, 'messageCount': r[5] or 0,
                                 'inputTokens': r[6] or 0, 'outputTokens': r[7] or 0,
                                 'active': active, 'source': 'hermes'})
         except: pass
