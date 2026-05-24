@@ -13828,9 +13828,9 @@ if hermes_bin:
     # or the user can restart manually. We use a separate nohup command so it
     # doesn't interfere with this SSH session.
     try:
-        restart_script = f'''
-import subprocess, glob, os, time
-hermes_bin = "{hermes_bin}"
+        restart_script = '''
+import subprocess, glob, os, sys, time
+hermes_bin = sys.argv[1]
 # Kill old gateways
 subprocess.run(["pkill", "-f", "hermes.*gateway"], capture_output=True, timeout=3)
 time.sleep(2)
@@ -13848,7 +13848,7 @@ if os.path.isdir(profiles_root):
         restart_path = '/tmp/_ooclaw_restart_gw.py'
         with open(restart_path, 'w') as f:
             f.write(restart_script)
-        subprocess.Popen(['nohup', 'python3', restart_path],
+        subprocess.Popen(['nohup', 'python3', restart_path, hermes_bin],
                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                         start_new_session=True)
         result["restarted"].append("scheduled")
