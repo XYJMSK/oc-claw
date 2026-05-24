@@ -408,7 +408,7 @@ function HermesConnectionRow({ conn, onUpdate, onDelete, disableLocal, t }: {
             <Check className="w-3 h-3" /> {t('common.success')} {testMsg && `· ${testMsg}`}
           </span>
         )}
-        {testResult === 'success' && needsPlugin && (
+        {testResult === 'success' && (
           <button
             disabled={installingPlugin}
             onClick={async () => {
@@ -428,7 +428,7 @@ function HermesConnectionRow({ conn, onUpdate, onDelete, disableLocal, t }: {
             }}
             className="px-3 py-1 bg-cyan-500/20 hover:bg-cyan-500/30 border border-cyan-500/30 rounded-lg text-xs font-medium text-cyan-400 transition-colors"
           >
-            {installingPlugin ? '安装中...' : '安装插件'}
+            {installingPlugin ? '安装中...' : needsPlugin ? '安装插件' : '更新插件'}
           </button>
         )}
         {testResult === 'error' && (
