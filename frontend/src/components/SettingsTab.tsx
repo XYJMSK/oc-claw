@@ -243,6 +243,7 @@ function HermesConnectionRow({ conn, onUpdate, onDelete, disableLocal, t }: {
   const [showGuide, setShowGuide] = useState(false)
   const [needsPlugin, setNeedsPlugin] = useState(false)
   const [installingPlugin, setInstallingPlugin] = useState(false)
+  const [installMsg, setInstallMsg] = useState('')
   const cancelledRef = useRef(false)
 
   const testConnection = async () => {
@@ -408,21 +409,30 @@ function HermesConnectionRow({ conn, onUpdate, onDelete, disableLocal, t }: {
             <Check className="w-3 h-3" /> {t('common.success')} {testMsg && `· ${testMsg}`}
           </span>
         )}
+        {testResult === 'success' && needsPlugin && (
+          <div className="text-xs text-amber-400/80 mt-1 px-2 py-1.5 bg-amber-500/10 border border-amber-500/20 rounded-lg">
+            ⚠️ 需要安装监控插件才能检测 Agent 工作状态。点击下方按钮一键安装（会自动重启 Gateway）。
+          </div>
+        )}
         {testResult === 'success' && (
           <button
             disabled={installingPlugin}
             onClick={async () => {
               setInstallingPlugin(true)
+              setInstallMsg('')
               try {
                 const r: any = await invoke('install_hermes_remote_plugin', { sshHost: conn.host, sshUser: conn.user })
                 if (r.installed && r.enabled) {
                   setNeedsPlugin(false)
                   setTestMsg(testMsg.replace('Plugin ✗', 'Plugin ✓').replace('Plugin ✓ (未启用)', 'Plugin ✓'))
+                  const targets = (r.targets || []).length
+                  const restarted = (r.restarted || []).join(', ')
+                  setInstallMsg(`✓ 安装成功 · ${targets} 个 profile · 已重启: ${restarted || '无'}`)
                 } else {
-                  setTestMsg(testMsg + ' · 安装失败')
+                  setInstallMsg(`✗ 安装失败: ${r.enable_error || r.error || '未知错误'}`)
                 }
               } catch (e: any) {
-                setTestMsg(testMsg + ' · ' + String(e))
+                setInstallMsg(`✗ ${String(e)}`)
               }
               setInstallingPlugin(false)
             }}
@@ -430,6 +440,11 @@ function HermesConnectionRow({ conn, onUpdate, onDelete, disableLocal, t }: {
           >
             {installingPlugin ? '安装中...' : needsPlugin ? '安装插件' : '更新插件'}
           </button>
+        )}
+        {installMsg && (
+          <span className={`text-xs ${installMsg.startsWith('✓') ? 'text-emerald-400' : 'text-red-400'}`}>
+            {installMsg}
+          </span>
         )}
         {testResult === 'error' && (
           <div className="text-xs text-red-400 w-full">
