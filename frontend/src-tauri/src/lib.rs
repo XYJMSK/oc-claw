@@ -13540,7 +13540,7 @@ print(json.dumps(results))
 #[tauri::command]
 async fn test_hermes_ssh(ssh_host: String, ssh_user: String) -> Result<serde_json::Value, String> {
     let py_script = r#"
-import json, os, subprocess
+import json, os, subprocess, glob
 checks = {}
 hermes_dir = os.path.expanduser('~/.hermes')
 checks['hermes_installed'] = os.path.isdir(hermes_dir)
@@ -13553,6 +13553,35 @@ try:
     checks['gateway_running'] = len(out.split()) > 0
     checks['gateway_pids'] = out.split()
 except: checks['gateway_running'] = False
+# Check ooclaw plugin status
+plugin_dir = os.path.join(hermes_dir, 'plugins', 'ooclaw')
+checks['plugin_installed'] = os.path.exists(os.path.join(plugin_dir, '__init__.py'))
+# Check if plugin is enabled in config.yaml
+checks['plugin_enabled'] = False
+config_path = os.path.join(hermes_dir, 'config.yaml')
+if os.path.exists(config_path):
+    try:
+        with open(config_path) as f:
+            content = f.read()
+        checks['plugin_enabled'] = 'ooclaw' in content
+    except: pass
+# Check profiles
+profiles = ['default']
+profiles_root = os.path.join(hermes_dir, 'profiles')
+if os.path.isdir(profiles_root):
+    for name in os.listdir(profiles_root):
+        if os.path.isdir(os.path.join(profiles_root, name)):
+            profiles.append(name)
+checks['profiles'] = profiles
+# Check ooclaw-status.json presence per profile
+status_files = {}
+for p in profiles:
+    if p == 'default':
+        sf = os.path.join(hermes_dir, 'ooclaw-status.json')
+    else:
+        sf = os.path.join(profiles_root, p, 'ooclaw-status.json')
+    status_files[p] = os.path.exists(sf)
+checks['status_files'] = status_files
 # Check session count in state.db
 if checks['state_db']:
     try:
@@ -13572,6 +13601,226 @@ print(json.dumps(checks))
     let trimmed = output.trim();
     let result: serde_json::Value = serde_json::from_str(trimmed)
         .map_err(|e| format!("parse hermes ssh test: {}", e))?;
+    Ok(result)
+}
+
+/// Install the ooclaw plugin on a remote Hermes instance via SSH.
+/// Pushes the plugin files and enables it in config.
+#[tauri::command]
+async fn install_hermes_remote_plugin(ssh_host: String, ssh_user: String) -> Result<serde_json::Value, String> {
+    // Generate the same plugin code as install_hermes_hooks but for remote
+    let plugin_yaml = r#"name: ooclaw
+version: 0.2.0
+description: "Forward Hermes Agent lifecycle events to oc-claw (local socket + status file)."
+hooks:
+  - on_session_start
+  - pre_llm_call
+  - post_llm_call
+  - pre_tool_call
+  - post_tool_call
+  - on_session_end
+  - on_session_finalize
+  - on_session_reset
+  - pre_approval_request
+  - post_approval_response
+"#;
+
+    // Unix socket connect code for remote (Linux servers)
+    let connect_code = r#"SOCKET_PATH = "/tmp/ooclaw-hermes.sock"
+
+def _send(payload):
+    import os as _os
+    if not _os.path.exists(SOCKET_PATH):
+        return
+    try:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(0.5)
+        s.connect(SOCKET_PATH)
+        s.sendall(json.dumps(payload).encode("utf-8"))
+        s.shutdown(socket.SHUT_WR)
+        s.close()
+    except Exception:
+        pass"#;
+
+    let init_py = format!(r##"# ooclaw plugin for Hermes Agent - forwards events to oc-claw.
+from __future__ import annotations
+import json, os, socket, time
+from typing import Any, Dict, Tuple
+from pathlib import Path
+
+{connect_code}
+
+HOOK_TO_EVENT: Dict[str, Tuple[str, str]] = {{
+    "on_session_start": ("waiting_for_input", "SessionStart"),
+    "pre_llm_call": ("processing", "UserPromptSubmit"),
+    "post_llm_call": ("waiting_for_input", "Stop"),
+    "pre_tool_call": ("running_tool", "PreToolUse"),
+    "post_tool_call": ("processing", "PostToolUse"),
+    "on_session_end": ("waiting_for_input", "Stop"),
+    "on_session_finalize": ("ended", "SessionEnd"),
+    "on_session_reset": ("waiting_for_input", "SessionStart"),
+    "pre_approval_request": ("waiting", "PermissionRequest"),
+    "post_approval_response": ("processing", "PostToolUse"),
+}}
+
+def _status_file_path():
+    \"\"\"Find the ooclaw status file path under the active profile or hermes home.\"\"\"
+    hermes_home = os.environ.get("HERMES_HOME", "") or os.path.expanduser("~/.hermes")
+    profile = os.environ.get("HERMES_PROFILE", "")
+    if profile:
+        return os.path.join(hermes_home, "profiles", profile, "ooclaw-status.json")
+    return os.path.join(hermes_home, "ooclaw-status.json")
+
+_MAX_EVENTS_PER_SESSION = 10
+_MAX_SESSIONS = 20
+
+def _write_status(payload):
+    \"\"\"Append event to status file, keeping last N events per session.\"\"\"
+    try:
+        status_path = _status_file_path()
+        session_id = payload.get("sessionId", "unknown")
+        data = {{}}
+        if os.path.exists(status_path):
+            try:
+                with open(status_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if not isinstance(data, dict):
+                    data = {{}}
+            except: data = {{}}
+        if session_id not in data:
+            data[session_id] = []
+        data[session_id].append(payload)
+        if len(data[session_id]) > _MAX_EVENTS_PER_SESSION:
+            data[session_id] = data[session_id][-_MAX_EVENTS_PER_SESSION:]
+        if len(data) > _MAX_SESSIONS:
+            by_ts = sorted(data.items(), key=lambda kv: (kv[1][-1].get("timestamp", 0) if kv[1] else 0), reverse=True)
+            data = dict(by_ts[:_MAX_SESSIONS])
+        tmp_path = status_path + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+        os.replace(tmp_path, status_path)
+    except Exception:
+        pass
+
+def _handle(event_name, **kwargs):
+    mapping = HOOK_TO_EVENT.get(event_name)
+    if not mapping:
+        return
+    status, cc_event = mapping
+    if event_name == "post_tool_call":
+        result = kwargs.get("result")
+        if isinstance(result, dict) and (result.get("error") or
+            (isinstance(result.get("exit_code"), int) and result["exit_code"] != 0)):
+            status, cc_event = "processing", "PostToolUse"
+    session_id = kwargs.get("session_id", "") or kwargs.get("conversation_id", "")
+    if not session_id:
+        return
+    tool_name = ""
+    if event_name in ("pre_tool_call", "post_tool_call", "pre_approval_request"):
+        tool_name = kwargs.get("tool_name", "") or kwargs.get("tool", "") or ""
+    platform = kwargs.get("platform", "") or ""
+    try:
+        cwd = os.getcwd()
+    except Exception:
+        cwd = os.path.expanduser("~/.hermes")
+    if not cwd:
+        cwd = os.path.expanduser("~/.hermes")
+    payload = {{
+        "sessionId": session_id,
+        "cwd": cwd,
+        "event": cc_event,
+        "claudeStatus": status,
+        "source": "hermes",
+        "pid": os.getpid(),
+        "platform": platform,
+        "timestamp": time.time(),
+    }}
+    if tool_name:
+        payload["tool"] = tool_name
+    if event_name == "pre_llm_call":
+        prompt = kwargs.get("prompt", "") or kwargs.get("message", "")
+        if prompt:
+            payload["userPrompt"] = prompt[:500]
+    elif event_name == "post_llm_call":
+        resp = kwargs.get("response", "") or kwargs.get("result", "")
+        if isinstance(resp, dict):
+            resp = resp.get("content", "") or resp.get("text", "")
+        if resp and isinstance(resp, str):
+            payload["lastResponse"] = resp[:2000]
+    _send(payload)
+    _write_status(payload)
+
+def _make_cb(event_name):
+    def cb(**kwargs):
+        try:
+            _handle(event_name, **kwargs)
+        except Exception:
+            pass
+        return None
+    cb.__name__ = "ooclaw_" + event_name
+    return cb
+
+def register(ctx):
+    for hook_name in HOOK_TO_EVENT:
+        ctx.register_hook(hook_name, _make_cb(hook_name))
+"##, connect_code = connect_code);
+
+    // Build a Python script that writes the plugin files and enables it
+    let install_script = format!(r#"
+import json, os, subprocess
+
+hermes_dir = os.path.expanduser('~/.hermes')
+plugin_dir = os.path.join(hermes_dir, 'plugins', 'ooclaw')
+os.makedirs(plugin_dir, exist_ok=True)
+
+# Write plugin.yaml
+with open(os.path.join(plugin_dir, 'plugin.yaml'), 'w') as f:
+    f.write('''{plugin_yaml}''')
+
+# Write __init__.py
+with open(os.path.join(plugin_dir, '__init__.py'), 'w') as f:
+    f.write('''{init_py}''')
+
+# Try to enable via hermes CLI
+result = {{"installed": True, "enabled": False, "method": "none"}}
+try:
+    out = subprocess.run(['hermes', 'plugins', 'enable', 'ooclaw'],
+                        capture_output=True, text=True, timeout=5)
+    if out.returncode == 0:
+        result["enabled"] = True
+        result["method"] = "cli"
+except:
+    # Fallback: patch config.yaml
+    config_path = os.path.join(hermes_dir, 'config.yaml')
+    if os.path.exists(config_path):
+        try:
+            with open(config_path) as f:
+                content = f.read()
+            if 'ooclaw' not in content:
+                if 'plugins:' in content:
+                    content = content.replace('enabled: []', 'enabled:\n  - ooclaw')
+                    if 'enabled: []' not in content:
+                        content = content.replace('enabled:', 'enabled:\n  - ooclaw', 1)
+                else:
+                    content += '\nplugins:\n  enabled:\n  - ooclaw\n  disabled: []\n'
+                with open(config_path, 'w') as f:
+                    f.write(content)
+                result["enabled"] = True
+                result["method"] = "config_patch"
+            else:
+                result["enabled"] = True
+                result["method"] = "already_enabled"
+        except Exception as e:
+            result["error"] = str(e)
+
+print(json.dumps(result))
+"#, plugin_yaml = plugin_yaml.replace("'''", "\\'''"), init_py = init_py.replace("'''", "\\'''"));
+
+    let cmd = format!("python3 -c {}", shell_escape_single(&install_script));
+    let output = ssh_exec(&ssh_host, &ssh_user, &cmd).await?;
+    let trimmed = output.trim();
+    let result: serde_json::Value = serde_json::from_str(trimmed)
+        .map_err(|e| format!("parse remote plugin install: {} (output: {})", e, &trimmed[..trimmed.len().min(300)]))?;
     Ok(result)
 }
 
@@ -15057,7 +15306,7 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, set_efficiency_hover_tracking, resize_mini_height, move_mini_by, get_mini_origin, get_mini_monitor_rect, set_mini_origin, set_ime_mode, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, install_cursor_hooks, install_gemini_hooks, install_hermes_hooks, test_hermes_hook, get_hermes_remote_stats, get_hermes_remote_sessions, get_hermes_sessions_summary, get_hermes_recent_activity, get_hermes_remote_recent_activity, test_hermes_ssh, remove_claude_session, resolve_claude_permission, get_claude_stats, open_url, activate_app, focus_cursor_terminal, check_ax_permission, request_ax_permission, jump_to_claude_terminal, check_for_update, run_update, close_ssh, read_local_file, list_backgrounds, save_background, get_background_data, exit_app, get_ssh_key_info, reset_ssh, get_ui_scale, list_custom_codex_pets, open_codex_pets_dir, import_codex_pet, pick_codex_pet_folder, reassert_floating, spawn_demo_mascot, close_demo_mascot, close_demo_mascots, debug_log, update_tray_language, set_pet_mode_window, set_pet_context_menu, set_pet_pomodoro_active, get_now_playing, get_system_idle_time, get_keyboard_idle_secs])
+        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, set_efficiency_hover_tracking, resize_mini_height, move_mini_by, get_mini_origin, get_mini_monitor_rect, set_mini_origin, set_ime_mode, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, install_cursor_hooks, install_gemini_hooks, install_hermes_hooks, test_hermes_hook, install_hermes_remote_plugin, get_hermes_remote_stats, get_hermes_remote_sessions, get_hermes_sessions_summary, get_hermes_recent_activity, get_hermes_remote_recent_activity, test_hermes_ssh, remove_claude_session, resolve_claude_permission, get_claude_stats, open_url, activate_app, focus_cursor_terminal, check_ax_permission, request_ax_permission, jump_to_claude_terminal, check_for_update, run_update, close_ssh, read_local_file, list_backgrounds, save_background, get_background_data, exit_app, get_ssh_key_info, reset_ssh, get_ui_scale, list_custom_codex_pets, open_codex_pets_dir, import_codex_pet, pick_codex_pet_folder, reassert_floating, spawn_demo_mascot, close_demo_mascot, close_demo_mascots, debug_log, update_tray_language, set_pet_mode_window, set_pet_context_menu, set_pet_pomodoro_active, get_now_playing, get_system_idle_time, get_keyboard_idle_secs])
         .manage(ActiveAgentPid { pid: Mutex::new(None) })
         .manage(ClaudeState { sessions: Arc::new(Mutex::new(HashMap::new())), pending_permissions: Arc::new(Mutex::new(HashMap::new())), dismissed: Arc::new(Mutex::new(std::collections::HashSet::new())) })
         .run(tauri::generate_context!())
