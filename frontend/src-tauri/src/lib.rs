@@ -13825,9 +13825,15 @@ if not result["enabled"]:
 result["restarted"] = []
 if hermes_bin:
     import time
-    # Kill existing gateway processes first
+    # Kill existing gateway processes first (use pgrep to find exact PIDs, avoid killing ourselves)
     try:
-        subprocess.run(['pkill', '-f', 'hermes.*gateway'], capture_output=True, timeout=3)
+        my_pid = os.getpid()
+        out = subprocess.run(['pgrep', '-f', 'hermes.*gateway'], capture_output=True, text=True, timeout=3)
+        if out.returncode == 0:
+            for line in out.stdout.strip().split('\n'):
+                pid = line.strip()
+                if pid and int(pid) != my_pid:
+                    subprocess.run(['kill', pid], capture_output=True, timeout=2)
         time.sleep(1)
     except: pass
     # Restart default gateway (Popen so we don't block)
