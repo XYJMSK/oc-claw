@@ -482,7 +482,7 @@ export function SettingsTab({ notifySound, onChangeNotifySound, waitingSound, on
     await store.save()
     if (val) {
       try {
-        await invoke('install_claude_hooks')
+        await invoke('install_codex_hooks')
         setCodexHookStatus(t('settings.hookInstalled'))
       } catch (e: any) {
         setCodexHookStatus(`${t('settings.hookFailed')} ${String(e)}`)

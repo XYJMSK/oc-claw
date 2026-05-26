@@ -6800,8 +6800,12 @@ fn collect_claude_project_jsonl_files() -> Vec<PathBuf> {
 
 fn collect_codex_session_jsonl_files() -> Vec<PathBuf> {
     let home = dirs::home_dir().unwrap_or_default();
-    let codex_sessions = home.join(".Codex").join("sessions");
-    collect_jsonl_files_recursive(&codex_sessions)
+    let mut out = collect_jsonl_files_recursive(&home.join(".codex").join("sessions"));
+    let legacy_sessions = home.join(".Codex").join("sessions");
+    if legacy_sessions.exists() {
+        out.extend(collect_jsonl_files_recursive(&legacy_sessions));
+    }
+    out
 }
 
 fn find_claude_session_file(session_id: &str) -> Option<PathBuf> {
@@ -6816,7 +6820,7 @@ fn find_claude_session_file(session_id: &str) -> Option<PathBuf> {
 
 fn find_codex_session_file(session_id: &str) -> Option<PathBuf> {
     // Codex stores sessions as:
-    //   ~/.Codex/sessions/YYYY/MM/DD/rollout-<timestamp>-<session_id>.jsonl
+    //   ~/.codex/sessions/YYYY/MM/DD/rollout-<timestamp>-<session_id>.jsonl
     // so we cannot derive the path from cwd; we must scan for a filename
     // containing the session id.
     for path in collect_codex_session_jsonl_files() {
@@ -6861,7 +6865,11 @@ fn ensure_codex_hooks_feature_enabled(codex_dir: &std::path::Path) -> Result<(),
         let mut found = false;
         for line in lines.iter_mut().take(features_end).skip(start + 1) {
             let trimmed = line.trim_start();
-            if trimmed.starts_with("hooks") && trimmed.contains('=') {
+            if (trimmed.starts_with("hooks ")
+                || trimmed.starts_with("hooks=")
+                || trimmed.starts_with("hooks\t"))
+                && trimmed.contains('=')
+            {
                 *line = "hooks = true".to_string();
                 found = true;
                 break;
@@ -10419,17 +10427,13 @@ try {
     std::fs::write(&settings_path, serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?)
         .map_err(|e| e.to_string())?;
 
-    // Keep Codex desktop integration in sync with Claude integration.
-    // Frontend still invokes `install_claude_hooks`, so we install both
-    // hook systems here to avoid requiring frontend API changes.
-    install_codex_hooks().await?;
-
     Ok(())
 }
 
+#[tauri::command]
 async fn install_codex_hooks() -> Result<(), String> {
     let home = dirs::home_dir().ok_or("no home dir")?;
-    let codex_dir = home.join(".Codex");
+    let codex_dir = home.join(".codex");
     let hooks_dir = codex_dir.join("hooks");
     std::fs::create_dir_all(&hooks_dir).map_err(|e| e.to_string())?;
 
@@ -10462,8 +10466,10 @@ try {
     $raw = [System.Text.Encoding]::UTF8.GetString($bytes, $offset, $count)
     if ([string]::IsNullOrWhiteSpace($raw)) { [Console]::Out.Write('{}'); exit 0 }
     try {
-        $debugPath = Join-Path $env:TEMP 'oc-claw-codex-hook-last.json'
-        ('event=' + $HookEvent + "`n" + $raw) | Set-Content -LiteralPath $debugPath -Encoding UTF8
+        if ($env:OC_CLAW_DEBUG_CODEX_HOOK -eq '1') {
+            $debugPath = Join-Path $env:TEMP 'oc-claw-codex-hook-last.json'
+            ('event=' + $HookEvent + "`n" + $raw) | Set-Content -LiteralPath $debugPath -Encoding UTF8
+        }
     } catch {}
 
     $obj = $null
@@ -10682,38 +10688,40 @@ except:
         }
     }
 
-    let event_names = [
-        "SessionStart",
-        "UserPromptSubmit",
-        "PreToolUse",
-        "PostToolUse",
-        "PermissionRequest",
-        "Stop",
-    ];
-    for event_name in event_names {
-        #[cfg(windows)]
+    #[cfg(windows)]
+    let make_hook_def = |event_name: &str| {
         let hook_command = format!("{} {}", hook_command_windows_base, event_name);
-        #[cfg(not(windows))]
-        let hook_command = hook_command_base.clone();
-        let mut hook_def = serde_json::json!({
+        serde_json::json!({
             "type": "command",
             "command": hook_command.clone(),
+            "command_windows": hook_command,
             "timeoutSec": 5,
-        });
-        #[cfg(windows)]
-        {
-            hook_def["command_windows"] = serde_json::json!(hook_command.clone());
-        }
-        #[cfg(not(windows))]
-        {
-            hook_def["command"] = serde_json::json!(hook_command.clone());
-        }
+        })
+    };
+    #[cfg(not(windows))]
+    let make_hook_def = |_event_name: &str| {
+        serde_json::json!({
+            "type": "command",
+            "command": hook_command_base.clone(),
+            "timeoutSec": 5,
+        })
+    };
+
+    let hook_configs = vec![
+        ("SessionStart", false),
+        ("UserPromptSubmit", false),
+        ("PreToolUse", true),
+        ("PostToolUse", true),
+        ("PermissionRequest", true),
+        ("Stop", false),
+        ("StopFailure", false),
+        ("SubagentStop", false),
+    ];
+    for (event_name, needs_matcher) in hook_configs {
+        let hook_def = make_hook_def(event_name);
         let arr = hooks.entry(event_name.to_string()).or_insert(serde_json::json!([]));
         let list = arr.as_array_mut().ok_or("hook event is not an array")?;
-        if event_name == "PreToolUse"
-            || event_name == "PostToolUse"
-            || event_name == "PermissionRequest"
-        {
+        if needs_matcher {
             list.push(serde_json::json!({"matcher": "*", "hooks": [hook_def.clone()]}));
         } else {
             list.push(serde_json::json!({"hooks": [hook_def.clone()]}));
@@ -12396,6 +12404,9 @@ pub fn run() {
             if let Err(e) = tauri::async_runtime::block_on(install_claude_hooks()) {
                 log::warn!("Failed to install Claude hooks on startup: {}", e);
             }
+            if let Err(e) = tauri::async_runtime::block_on(install_codex_hooks()) {
+                log::warn!("Failed to install Codex hooks on startup: {}", e);
+            }
             // Install Cursor hooks + terminal-focus extension on startup (idempotent)
             if let Err(e) = tauri::async_runtime::block_on(install_cursor_hooks()) {
                 log::warn!("Failed to install Cursor hooks on startup: {}", e);
@@ -12698,7 +12709,7 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, set_efficiency_hover_tracking, resize_mini_height, move_mini_by, get_mini_origin, get_mini_monitor_rect, set_mini_origin, set_ime_mode, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, install_cursor_hooks, remove_claude_session, resolve_claude_permission, get_claude_stats, open_url, activate_app, focus_cursor_terminal, check_ax_permission, request_ax_permission, jump_to_claude_terminal, check_for_update, run_update, close_ssh, read_local_file, list_backgrounds, save_background, get_background_data, exit_app, get_ssh_key_info, reset_ssh, get_ui_scale, list_custom_codex_pets, open_codex_pets_dir, import_codex_pet, pick_codex_pet_folder, reassert_floating, spawn_demo_mascot, close_demo_mascot, close_demo_mascots, debug_log, update_tray_language, set_pet_mode_window, set_pet_context_menu, set_pet_pomodoro_active, get_now_playing, get_system_idle_time])
+        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, set_efficiency_hover_tracking, resize_mini_height, move_mini_by, get_mini_origin, get_mini_monitor_rect, set_mini_origin, set_ime_mode, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, install_codex_hooks, install_cursor_hooks, remove_claude_session, resolve_claude_permission, get_claude_stats, open_url, activate_app, focus_cursor_terminal, check_ax_permission, request_ax_permission, jump_to_claude_terminal, check_for_update, run_update, close_ssh, read_local_file, list_backgrounds, save_background, get_background_data, exit_app, get_ssh_key_info, reset_ssh, get_ui_scale, list_custom_codex_pets, open_codex_pets_dir, import_codex_pet, pick_codex_pet_folder, reassert_floating, spawn_demo_mascot, close_demo_mascot, close_demo_mascots, debug_log, update_tray_language, set_pet_mode_window, set_pet_context_menu, set_pet_pomodoro_active, get_now_playing, get_system_idle_time])
         .manage(ActiveAgentPid { pid: Mutex::new(None) })
         .manage(ClaudeState { sessions: Arc::new(Mutex::new(HashMap::new())), pending_permissions: Arc::new(Mutex::new(HashMap::new())) })
         .run(tauri::generate_context!())

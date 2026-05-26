@@ -2026,7 +2026,8 @@ export default function Mini() {
       setEnableCodex(codEnabled)
       // Hook script is shared between CC CLI and CC Desktop, so install when
       // any of the Claude listeners are on.
-      if (cc !== false || codEnabled || ccDesktopEnabled) invoke('install_claude_hooks').catch(() => {})
+      if (cc !== false || ccDesktopEnabled) invoke('install_claude_hooks').catch(() => {})
+      if (codEnabled) invoke('install_codex_hooks').catch(() => {})
       const cur = await store.get('enable_cursor')
       const curEnabled = cur !== false
       setEnableCursor(curEnabled)
