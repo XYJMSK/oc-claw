@@ -4751,11 +4751,11 @@ export default function Mini() {
                                           {sessionNicknames[`oc:${s.agentId}:${s.key}`] || title}
                                         </span>
                                       )}
-                                      {subtitle && <span className="min-w-0 max-w-[45%] truncate text-[13px] font-normal text-slate-500">· {subtitle}</span>}
-                                      {s.lastAssistantMsg && <span className="min-w-0 flex-1 truncate text-[11px] text-white/40">· {s.lastAssistantMsg}</span>}
+                                      {subtitle && <span className="min-w-0 truncate text-[13px] font-normal text-slate-500">· {subtitle}</span>}
+                                      {s.lastAssistantMsg && <span className="min-w-0 truncate text-[11px] text-white/40">· {s.lastAssistantMsg}</span>}
                                     </div>
-                                    <div className="flex items-center gap-2 shrink-0">
-                                      {s.channel && <span className="text-[11px] px-2 py-0.5 rounded-md font-normal bg-[#27272a] text-slate-300">{formatChannelLabel(s.channel)}</span>}
+                                    <div className="flex items-center gap-2 shrink-0 ml-auto">
+                                      {s.channel && <span className="text-[11px] px-2 py-0.5 rounded-md font-normal bg-[#27272a] text-slate-300 whitespace-nowrap">{formatChannelLabel(s.channel)}</span>}
                                       <div className="w-8 flex items-center justify-center">
                                         <span className="text-[11px] text-slate-500 font-normal group-hover:hidden">{timeAgo}</span>
                                         <button
