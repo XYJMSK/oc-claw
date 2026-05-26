@@ -7513,12 +7513,14 @@ async fn get_claude_sessions(state: tauri::State<'_, ClaudeState>) -> Result<Vec
                 continue;
             }
             if live_hermes_ids.contains(&dbs.session_id) {
-                // Backfill user_prompt for live sessions missing it
-                if let Some(ref prompt) = dbs.user_prompt {
-                    if let Some(live) = list.iter_mut().find(|s| s.source == "hermes" && s.session_id == dbs.session_id) {
-                        if live.user_prompt.is_none() || live.user_prompt.as_deref() == Some("") {
+                if let Some(live) = list.iter_mut().find(|s| s.source == "hermes" && s.session_id == dbs.session_id) {
+                    if live.user_prompt.is_none() || live.user_prompt.as_deref() == Some("") {
+                        if let Some(ref prompt) = dbs.user_prompt {
                             live.user_prompt = Some(prompt.clone());
                         }
+                    }
+                    if live.last_response.is_none() {
+                        live.last_response = dbs.last_response.clone();
                     }
                 }
             } else {
