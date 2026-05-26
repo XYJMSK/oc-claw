@@ -2118,8 +2118,7 @@ export default function Mini() {
       setClaudeSessions([])
       return
     }
-    // Track which sessions already had lastResponse so we only auto-expand once.
-    const seenCompletions = new Set<string>()
+    const seenCompletions = new Set<string>(shownCompletionsRef.current)
     // Track previously logged session statuses so we only emit a backend log
     // line when something actually changes — keeps oc-claw.log readable.
     const lastLoggedStatus = new Map<string, string>()
@@ -2190,16 +2189,20 @@ export default function Mini() {
           if (shouldExpand) {
             const candidate = newCompletions.find(s => !s.isActiveTab) || newCompletions[0]
             if (candidate && !candidate.isActiveTab) {
+              shownCompletionsRef.current.add(candidate.sessionId)
               hoverExpandedRef.current = true
               setCompletionSessionId(candidate.sessionId)
               expandFnRef.current?.()
             }
           }
         }
-        // Keep seenCompletions in sync: remove sessions that no longer have lastResponse
+        // Keep seenCompletions in sync: remove sessions that no longer have
+        // lastResponse (user started a new turn), so the NEXT completion in
+        // the same session can trigger the popup again.
         for (const sid of seenCompletions) {
           if (!sessions.find((s: any) => s.sessionId === sid && s.lastResponse)) {
             seenCompletions.delete(sid)
+            shownCompletionsRef.current.delete(sid)
           }
         }
         // Filter out local Hermes sessions if no local connection is configured
@@ -2461,6 +2464,7 @@ export default function Mini() {
   const completionSessionIdRef = useRef<string | null>(null)
   const [effListCollapsed, setEffListCollapsed] = useState(false)
   const collapseFnRef = useRef<(() => void) | null>(null)
+  const shownCompletionsRef = useRef(new Set<string>())
   const setCompletionSessionId = useCallback((id: string | null) => {
     completionSessionIdRef.current = id
     _setCompletionSessionId(id)
