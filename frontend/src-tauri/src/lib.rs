@@ -7455,7 +7455,7 @@ async fn get_claude_sessions(state: tauri::State<'_, ClaudeState>) -> Result<Vec
     let sessions = state.sessions.lock().map_err(|e| e.to_string())?;
     let active_tid = get_active_ghostty_terminal_id();
     let mut list: Vec<ClaudeSession> = sessions.values()
-        .filter(|s| !s.cwd.is_empty())
+        .filter(|s| !s.cwd.is_empty() || s.source == "cursor")
         .filter(|s| !is_codex_internal_utility_session(s))
         .cloned()
         .collect();
@@ -12147,6 +12147,26 @@ fn process_claude_event(
                         }
                     }
                 }
+                // Last resort for Cursor: if still no cwd, probe extension
+                // ports for the focused window's workspace root.
+                if incoming_cwd.is_empty() && session.source == "cursor" && session.cwd.is_empty() {
+                    for port in 23456..=23460u16 {
+                        if let Some(meta) = get_cursor_window_meta(port) {
+                            if meta.focused {
+                                if let Some(root) = meta.workspace_roots.first() {
+                                    incoming_cwd = normalize_cursor_path(root);
+                                    log::info!(
+                                        "[cursor_cwd_probe] session={} port={} cwd={}",
+                                        &session_id[..session_id.len().min(8)],
+                                        port,
+                                        incoming_cwd,
+                                    );
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
                 if !incoming_cwd.is_empty() || session.cwd.is_empty() {
                     session.cwd = incoming_cwd;
                 }
@@ -13920,6 +13940,10 @@ output['event'] = hook_event
 output['source'] = 'cursor'
 if cwd:
     output['cwd'] = cwd
+else:
+    roots = input_data.get('workspace_roots', [])
+    if roots:
+        output['workspace_roots'] = roots
 
 # Map tool info — Cursor events use different field names than CC:
 #   beforeShellExecution: command, cwd
