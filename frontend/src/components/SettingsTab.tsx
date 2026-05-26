@@ -281,6 +281,9 @@ function HermesConnectionRow({ conn, onUpdate, onDelete, disableLocal, t }: {
         const checks: { ok: boolean; msg: string }[] = result.checks || []
         setTestMsg(checks.map(c => `${c.ok ? '✓' : '✗'} ${c.msg}`).join(' · '))
         setTestResult(ok ? 'success' : 'error')
+        // Check if plugin needs to be installed/updated locally
+        const pluginChecks = checks.filter(c => c.msg.toLowerCase().includes('plugin'))
+        setNeedsPlugin(pluginChecks.length > 0 ? pluginChecks.some(c => !c.ok) : !ok)
       }
       setTimeout(() => setTestResult(null), 5000)
     } catch (e: any) {
@@ -414,21 +417,27 @@ function HermesConnectionRow({ conn, onUpdate, onDelete, disableLocal, t }: {
             ⚠️ 需要安装监控插件才能检测 Agent 工作状态。点击下方按钮一键安装（会自动重启 Gateway）。
           </div>
         )}
-        {testResult === 'success' && conn.type === 'remote' && (
+        {testResult === 'success' && (
           <button
             disabled={installingPlugin}
             onClick={async () => {
               setInstallingPlugin(true)
               setInstallMsg('')
               try {
-                const r: any = await invoke('install_hermes_remote_plugin', { sshHost: conn.host, sshUser: conn.user })
-                if (r.installed && r.enabled) {
-                  setNeedsPlugin(false)
-                  setTestMsg(testMsg.replace('Plugin ✗', 'Plugin ✓').replace('Plugin ✓ (未启用)', 'Plugin ✓'))
-                  const targets = (r.targets || []).length
-                  setInstallMsg(`✓ 安装成功 · ${targets} 个 profile · Gateway 重启中，约 1 分钟后生效`)
+                if (conn.type === 'remote') {
+                  const r: any = await invoke('install_hermes_remote_plugin', { sshHost: conn.host, sshUser: conn.user })
+                  if (r.installed && r.enabled) {
+                    setNeedsPlugin(false)
+                    setTestMsg(testMsg.replace('Plugin ✗', 'Plugin ✓').replace('Plugin ✓ (未启用)', 'Plugin ✓'))
+                    const targets = (r.targets || []).length
+                    setInstallMsg(`✓ 安装成功 · ${targets} 个 profile · Gateway 重启中，约 1 分钟后生效`)
+                  } else {
+                    setInstallMsg(`✗ 安装失败: ${r.enable_error || r.error || '未知错误'}`)
+                  }
                 } else {
-                  setInstallMsg(`✗ 安装失败: ${r.enable_error || r.error || '未知错误'}`)
+                  await invoke('install_hermes_hooks')
+                  setNeedsPlugin(false)
+                  setInstallMsg('✓ 插件安装/更新成功')
                 }
               } catch (e: any) {
                 setInstallMsg(`✗ ${String(e)}`)

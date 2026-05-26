@@ -12872,15 +12872,17 @@ def _send(payload):
     let init_py = format!(
         r##"# ooclaw plugin for Hermes Agent - forwards events to oc-claw.
 from __future__ import annotations
-import json, os, socket, time
+import json, os, socket, time, threading
 from typing import Any, Dict, Tuple
 from pathlib import Path
 
 {connect_code}
 
-# Track the last session_id so we can detect context-compaction rollovers
-# and emit a synthetic SessionEnd for the old session.
-_last_session_id: str = ""
+# Track the last session_id per thread so we can detect context-compaction
+# rollovers and emit a synthetic SessionEnd for the old session.
+# Using thread-local storage because delegate_task subagents run in separate
+# threads within the same process.
+_thread_local = threading.local()
 
 HOOK_TO_EVENT: Dict[str, Tuple[str, str]] = {{
     "on_session_start": ("waiting_for_input", "SessionStart"),
@@ -12901,7 +12903,6 @@ def _status_file_path():
     profile = os.environ.get("HERMES_PROFILE", "")
     if profile:
         return os.path.join(hermes_home, "profiles", profile, "ooclaw-status.json")
-    # Default profile uses hermes_home directly
     return os.path.join(hermes_home, "ooclaw-status.json")
 
 _MAX_EVENTS_PER_SESSION = 10
@@ -12912,7 +12913,6 @@ def _write_status(payload):
     try:
         status_path = _status_file_path()
         session_id = payload.get("sessionId", "unknown")
-        # Read existing data
         data = {{}}
         if os.path.exists(status_path):
             try:
@@ -12922,18 +12922,14 @@ def _write_status(payload):
                     data = {{}}
             except Exception:
                 data = {{}}
-        # Append to this session's event list
         if session_id not in data:
             data[session_id] = []
         data[session_id].append(payload)
-        # Trim to max events per session
         if len(data[session_id]) > _MAX_EVENTS_PER_SESSION:
             data[session_id] = data[session_id][-_MAX_EVENTS_PER_SESSION:]
-        # Trim stale sessions (keep most recent N by latest timestamp)
         if len(data) > _MAX_SESSIONS:
             by_ts = sorted(data.items(), key=lambda kv: (kv[1][-1].get("timestamp", 0) if kv[1] else 0), reverse=True)
             data = dict(by_ts[:_MAX_SESSIONS])
-        # Atomic write
         tmp_path = status_path + ".tmp"
         with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False)
@@ -12942,7 +12938,6 @@ def _write_status(payload):
         pass
 
 def _handle(event_name, **kwargs):
-    global _last_session_id
     mapping = HOOK_TO_EVENT.get(event_name)
     if not mapping:
         return
@@ -12967,11 +12962,12 @@ def _handle(event_name, **kwargs):
         cwd = os.path.expanduser("~/.hermes")
 
     # Detect context-compaction session rollover: if session_id changed from
-    # a previous value (same process), emit a synthetic SessionEnd for the old
+    # a previous value (same thread), emit a synthetic SessionEnd for the old
     # session so oc-claw stops showing it as active.
-    if _last_session_id and _last_session_id != session_id:
+    last_sid = getattr(_thread_local, "last_session_id", "")
+    if last_sid and last_sid != session_id:
         end_payload = {{
-            "sessionId": _last_session_id,
+            "sessionId": last_sid,
             "cwd": cwd,
             "event": "SessionEnd",
             "claudeStatus": "ended",
@@ -12982,7 +12978,7 @@ def _handle(event_name, **kwargs):
         }}
         _send(end_payload)
         _write_status(end_payload)
-    _last_session_id = session_id
+    _thread_local.last_session_id = session_id
 
     payload = {{
         "sessionId": session_id,
