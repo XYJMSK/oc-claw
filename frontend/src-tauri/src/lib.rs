@@ -12352,8 +12352,19 @@ fn process_claude_event(
                     } else {
                         false
                     };
-                    if is_tab_active || interrupted || session.source == "hermes" {
+                    if is_tab_active || interrupted {
                         session.last_response = None;
+                    } else if session.source == "hermes" {
+                        // Hermes sessions: preserve lastResponse for inline preview
+                        // in the session list, but the completion popup is suppressed
+                        // on the frontend side (s.source !== 'hermes' guard).
+                        let resp_from_event = event.get("lastResponse")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string());
+                        if resp_from_event.is_some() {
+                            session.last_response = resp_from_event;
+                        }
+                        // else: keep existing last_response from post_llm_call
                     } else {
                         // Prefer lastResponse from the event itself (CC's Stop has it),
                         // then fall back to any value pre-stored by afterAgentResponse,
@@ -12933,11 +12944,17 @@ def _handle(event_name, **kwargs):
     if tool_name:
         payload["tool"] = tool_name
     if event_name == "pre_llm_call":
-        prompt = kwargs.get("prompt", "") or kwargs.get("message", "")
-        if prompt:
-            payload["userPrompt"] = prompt[:500]
+        prompt = kwargs.get("user_message", "") or kwargs.get("prompt", "") or kwargs.get("message", "")
+        if prompt and isinstance(prompt, str):
+            if "[CONTEXT COMPACTION" in prompt[:30]:
+                marker = "--- END OF CONTEXT SUMMARY"
+                idx = prompt.find(marker)
+                if idx != -1:
+                    prompt = prompt[idx + len(marker):].strip().lstrip("-").strip()
+            if prompt:
+                payload["userPrompt"] = prompt[:500]
     elif event_name == "post_llm_call":
-        resp = kwargs.get("response", "") or kwargs.get("result", "")
+        resp = kwargs.get("assistant_response", "") or kwargs.get("response", "") or kwargs.get("result", "")
         if isinstance(resp, dict):
             resp = resp.get("content", "") or resp.get("text", "")
         if resp and isinstance(resp, str):
@@ -13744,11 +13761,17 @@ def _handle(event_name, **kwargs):
     if tool_name:
         payload["tool"] = tool_name
     if event_name == "pre_llm_call":
-        prompt = kwargs.get("prompt", "") or kwargs.get("message", "")
-        if prompt:
-            payload["userPrompt"] = prompt[:500]
+        prompt = kwargs.get("user_message", "") or kwargs.get("prompt", "") or kwargs.get("message", "")
+        if prompt and isinstance(prompt, str):
+            if "[CONTEXT COMPACTION" in prompt[:30]:
+                marker = "--- END OF CONTEXT SUMMARY"
+                idx = prompt.find(marker)
+                if idx != -1:
+                    prompt = prompt[idx + len(marker):].strip().lstrip("-").strip()
+            if prompt:
+                payload["userPrompt"] = prompt[:500]
     elif event_name == "post_llm_call":
-        resp = kwargs.get("response", "") or kwargs.get("result", "")
+        resp = kwargs.get("assistant_response", "") or kwargs.get("response", "") or kwargs.get("result", "")
         if isinstance(resp, dict):
             resp = resp.get("content", "") or resp.get("text", "")
         if resp and isinstance(resp, str):

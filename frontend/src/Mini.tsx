@@ -4807,7 +4807,7 @@ export default function Mini() {
                                   return hermesPlatform.charAt(0).toUpperCase() + hermesPlatform.slice(1)
                                 })()
                                 const isRemoteHermes = isHermesSource && cs.sessionId?.startsWith('ssh:')
-                                const sourceLabel = isCursorSource ? 'Cursor' : isCodexSource ? 'Codex' : isGeminiSource ? 'Gemini' : isHermesSource ? ('Hermes' + (hermesPlatformLabel ? ` · ${hermesPlatformLabel}` : '')) : 'Claude'
+                                const sourceLabel = isCursorSource ? 'Cursor' : isCodexSource ? 'Codex' : isGeminiSource ? 'Gemini' : isHermesSource ? 'Hermes' : 'Claude'
                                 const sourceBadgeClass = isCursorSource ? 'bg-[#1a2f3f] text-[#5eb5f7]' : isCodexSource ? 'bg-[#1d2f26] text-[#6dd29c]' : isGeminiSource ? 'bg-[#1d2736] text-[#8ab4f8]' : isHermesSource ? 'bg-[#2d1f3f] text-[#c084fc]' : 'bg-[#3f211d] text-[#e87a65]'
                                 const openClaudeDetail = () => {
                                   setSelectedAgentId(null)
