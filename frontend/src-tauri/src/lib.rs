@@ -17,6 +17,15 @@ static EFFICIENCY_HOVER_THREAD_ALIVE: AtomicBool = AtomicBool::new(false);
 /// decide which detection region to check — collapsed notch area vs expanded
 /// panel area).
 static EFFICIENCY_EXPANDED: AtomicBool = AtomicBool::new(false);
+/// Windows-only: whether the global outside-click watcher should run. The
+/// expanded mini panel may never take OS focus (auto-expanded completion
+/// popups), so the window-blur close path never fires. This watcher polls the
+/// global mouse buttons and emits `mini-outside-click` when the user clicks
+/// outside the mini window, letting the frontend collapse the panel.
+#[cfg(target_os = "windows")]
+static OUTSIDE_CLICK_WATCH_ACTIVE: AtomicBool = AtomicBool::new(false);
+#[cfg(target_os = "windows")]
+static OUTSIDE_CLICK_WATCH_THREAD_ALIVE: AtomicBool = AtomicBool::new(false);
 /// Cached screen geometry for the notch hover poll thread so it doesn't need
 /// to access NSWindow from a background thread.
 /// (screen_x, screen_y, screen_width, screen_height, notch_offset)
@@ -3832,6 +3841,68 @@ fn cursor_over_mini_window(app: tauri::AppHandle) -> bool {
         let _ = app;
         true
     }
+}
+
+/// Start/stop the Windows outside-click watcher. No-op on other platforms,
+/// where window blur already closes the expanded panel.
+#[tauri::command]
+fn set_outside_click_watch(app: tauri::AppHandle, active: bool) {
+    #[cfg(target_os = "windows")]
+    {
+        OUTSIDE_CLICK_WATCH_ACTIVE.store(active, Ordering::SeqCst);
+        if active && !OUTSIDE_CLICK_WATCH_THREAD_ALIVE.load(Ordering::SeqCst) {
+            let app2 = app.clone();
+            std::thread::spawn(move || outside_click_watch_poll(app2));
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (app, active);
+    }
+}
+
+/// Windows polling loop: detect a fresh left/right mouse press and, if the
+/// cursor is outside the mini window's bounds, emit `mini-outside-click` so the
+/// frontend can collapse the panel. Runs only while the panel is expanded.
+#[cfg(target_os = "windows")]
+fn outside_click_watch_poll(app: tauri::AppHandle) {
+    use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+    use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+    use windows::Win32::Foundation::POINT;
+    const VK_LBUTTON: i32 = 0x01;
+    const VK_RBUTTON: i32 = 0x02;
+
+    OUTSIDE_CLICK_WATCH_THREAD_ALIVE.store(true, Ordering::SeqCst);
+    // Only react on the press edge so one click emits at most one event.
+    let mut prev_pressed = false;
+    while OUTSIDE_CLICK_WATCH_ACTIVE.load(Ordering::SeqCst) {
+        let pressed = unsafe {
+            ((GetAsyncKeyState(VK_LBUTTON) as u16) & 0x8000) != 0
+                || ((GetAsyncKeyState(VK_RBUTTON) as u16) & 0x8000) != 0
+        };
+        if pressed && !prev_pressed {
+            // Default to "inside" when geometry can't be read, so we never
+            // collapse on an ambiguous reading.
+            let mut inside = true;
+            if let Some(win) = app.get_webview_window("mini") {
+                if let (Ok(pos), Ok(size)) = (win.outer_position(), win.outer_size()) {
+                    let mut pt = POINT::default();
+                    if unsafe { GetCursorPos(&mut pt).is_ok() } {
+                        inside = pt.x >= pos.x
+                            && pt.x <= pos.x + size.width as i32
+                            && pt.y >= pos.y
+                            && pt.y <= pos.y + size.height as i32;
+                    }
+                }
+            }
+            if !inside {
+                let _ = app.emit("mini-outside-click", ());
+            }
+        }
+        prev_pressed = pressed;
+        std::thread::sleep(std::time::Duration::from_millis(40));
+    }
+    OUTSIDE_CLICK_WATCH_THREAD_ALIVE.store(false, Ordering::SeqCst);
 }
 
 /// Background polling loop for efficiency-mode hover.
@@ -16150,7 +16221,7 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, set_efficiency_hover_tracking, cursor_over_mini_window, resize_mini_height, move_mini_by, get_mini_origin, get_mini_monitor_rect, set_mini_origin, set_ime_mode, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, install_cursor_hooks, install_gemini_hooks, install_hermes_hooks, test_hermes_hook, install_hermes_remote_plugin, get_hermes_remote_stats, get_hermes_remote_sessions, get_hermes_sessions_summary, get_hermes_recent_activity, get_hermes_remote_recent_activity, test_hermes_ssh, remove_claude_session, resolve_claude_permission, get_claude_stats, open_url, activate_app, focus_cursor_terminal, check_ax_permission, request_ax_permission, jump_to_claude_terminal, check_for_update, run_update, close_ssh, read_local_file, list_backgrounds, save_background, get_background_data, exit_app, get_ssh_key_info, reset_ssh, get_ui_scale, list_custom_codex_pets, open_codex_pets_dir, import_codex_pet, pick_codex_pet_folder, reassert_floating, spawn_demo_mascot, close_demo_mascot, close_demo_mascots, debug_log, update_tray_language, set_pet_mode_window, set_pet_context_menu, set_pet_pomodoro_active, get_now_playing, get_system_idle_time, get_keyboard_idle_secs])
+        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, set_efficiency_hover_tracking, cursor_over_mini_window, set_outside_click_watch, resize_mini_height, move_mini_by, get_mini_origin, get_mini_monitor_rect, set_mini_origin, set_ime_mode, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, install_cursor_hooks, install_gemini_hooks, install_hermes_hooks, test_hermes_hook, install_hermes_remote_plugin, get_hermes_remote_stats, get_hermes_remote_sessions, get_hermes_sessions_summary, get_hermes_recent_activity, get_hermes_remote_recent_activity, test_hermes_ssh, remove_claude_session, resolve_claude_permission, get_claude_stats, open_url, activate_app, focus_cursor_terminal, check_ax_permission, request_ax_permission, jump_to_claude_terminal, check_for_update, run_update, close_ssh, read_local_file, list_backgrounds, save_background, get_background_data, exit_app, get_ssh_key_info, reset_ssh, get_ui_scale, list_custom_codex_pets, open_codex_pets_dir, import_codex_pet, pick_codex_pet_folder, reassert_floating, spawn_demo_mascot, close_demo_mascot, close_demo_mascots, debug_log, update_tray_language, set_pet_mode_window, set_pet_context_menu, set_pet_pomodoro_active, get_now_playing, get_system_idle_time, get_keyboard_idle_secs])
         .manage(ActiveAgentPid { pid: Mutex::new(None) })
         .manage(ClaudeState { sessions: Arc::new(Mutex::new(HashMap::new())), pending_permissions: Arc::new(Mutex::new(HashMap::new())), dismissed: Arc::new(Mutex::new(std::collections::HashSet::new())) })
         .run(tauri::generate_context!())

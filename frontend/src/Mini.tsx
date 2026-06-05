@@ -3604,6 +3604,31 @@ export default function Mini() {
     return () => window.removeEventListener('mousedown', onClick)
   }, [expanded, pinned, settingsMode, settingsTransitioning, updateModalOpen, collapse, debugToTerminal, isSettingsPickerBlockingClose])
 
+  // Windows: an auto-expanded completion popup never takes OS focus, so the
+  // window-blur close path never fires and clicking another app won't close
+  // the panel. A Rust-side global mouse watcher emits `mini-outside-click`
+  // when the user clicks outside the mini window — collapse on that.
+  useEffect(() => {
+    if (!isWindowsPlatform) return
+    if (!expanded || pinned || settingsMode || settingsTransitioning || updateModalOpen) {
+      invoke('set_outside_click_watch', { active: false }).catch(() => {})
+      return
+    }
+    invoke('set_outside_click_watch', { active: true }).catch(() => {})
+    const unlisten = listen('mini-outside-click', () => {
+      if (pinnedRef.current || settingsModeRef.current) return
+      if (isCreateModalOpenRef.current) return
+      if (filePickerOpenRef.current) return
+      if (isSettingsPickerBlockingClose()) return
+      debugToTerminal('outside', 'mini-outside-click -> collapse')
+      collapse()
+    })
+    return () => {
+      invoke('set_outside_click_watch', { active: false }).catch(() => {})
+      unlisten.then((fn) => fn())
+    }
+  }, [expanded, pinned, settingsMode, settingsTransitioning, updateModalOpen, collapse, debugToTerminal, isSettingsPickerBlockingClose])
+
   // Window blur: collapse when user clicks outside the app (when not pinned, or in settings mode)
   // Skip blur when a file picker dialog is open
   useEffect(() => {
