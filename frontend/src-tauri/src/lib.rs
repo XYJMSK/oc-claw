@@ -11639,8 +11639,8 @@ fn load_hermes_conversation(session_id: &str) -> Result<Vec<ChatMessage>, String
             // Tool result: show tool_name and truncated content
             let name = tool_name.unwrap_or_default();
             let body = content.unwrap_or_default();
-            let truncated = if body.len() > 300 {
-                format!("{}…", &body[..300])
+            let truncated = if body.chars().count() > 300 {
+                format!("{}…", truncate_chars(&body, 300))
             } else {
                 body
             };
@@ -11666,8 +11666,8 @@ fn load_hermes_conversation(session_id: &str) -> Result<Vec<ChatMessage>, String
                             .and_then(|f| f.get("arguments"))
                             .and_then(|a| a.as_str())
                             .unwrap_or("");
-                        let args_truncated = if fn_args.len() > 200 {
-                            format!("{}…", &fn_args[..200])
+                        let args_truncated = if fn_args.chars().count() > 200 {
+                            format!("{}…", truncate_chars(fn_args, 200))
                         } else {
                             fn_args.to_string()
                         };
