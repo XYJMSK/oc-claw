@@ -4620,6 +4620,8 @@ export default function Mini() {
                             }
 
                             const agentSeqCount: Record<string, number> = {}
+                            // Per-identity sequence for Hermes titles, mirroring agentSeqCount.
+                            const hermesSeqCount: Record<string, number> = {}
                             const formatTimeAgo = (ts: number) => {
                               if (!ts) return ''
                               const diff = Date.now() - ts
@@ -4832,7 +4834,13 @@ export default function Mini() {
                               } else {
                                 const cs = item.data
                                 const isHermesSrc = cs.source === 'hermes'
-                                const defaultProjectName = cs.cwd ? cs.cwd.replace(/\\/g, '/').split('/').pop() : (isHermesSrc ? (cs.userPrompt || cs.user_prompt || cs.platform || 'Hermes') : 'unknown')
+                                // Hermes title mirrors OpenClaw: a stable identity + sequence,
+                                // never the question (which only goes to the subtitle below).
+                                const hermesTitle = (() => {
+                                  const seq = (hermesSeqCount['hermes'] = (hermesSeqCount['hermes'] || 0) + 1)
+                                  return `Hermes #${seq}`
+                                })()
+                                const defaultProjectName = isHermesSrc ? hermesTitle : (cs.cwd ? cs.cwd.replace(/\\/g, '/').split('/').pop() : 'unknown')
                                 const projectName = sessionNicknames[cs.sessionId] || defaultProjectName
                                 const isActive = item.active
                                 const isWaiting = cs.status === 'waiting'
@@ -5585,6 +5593,8 @@ export default function Mini() {
                             const merged = [...unified, ...claudeUnified].sort((a, b) => (b.active ? 1 : 0) - (a.active ? 1 : 0) || b.updatedAt - a.updatedAt)
 
                             const agentSeqCount: Record<string, number> = {}
+                            // Per-identity sequence for Hermes titles, mirroring agentSeqCount.
+                            const hermesSeqCount: Record<string, number> = {}
                             return merged.map((item, index) => {
                               if (item.type === 'oc') {
                                 const s = item.data
@@ -5634,7 +5644,13 @@ export default function Mini() {
                                 )
                               } else {
                                 const cs = item.data
-                                const projectName = cs.cwd ? cs.cwd.replace(/\\/g, '/').split('/').pop() : (cs.source === 'hermes' ? (cs.userPrompt || cs.user_prompt || cs.platform || 'Hermes') : 'unknown')
+                                // Hermes title mirrors OpenClaw: stable identity + sequence,
+                                // never the question (the question is appended separately below).
+                                const hermesTitle = (() => {
+                                  const seq = (hermesSeqCount['hermes'] = (hermesSeqCount['hermes'] || 0) + 1)
+                                  return `Hermes #${seq}`
+                                })()
+                                const projectName = cs.source === 'hermes' ? hermesTitle : (cs.cwd ? cs.cwd.replace(/\\/g, '/').split('/').pop() : 'unknown')
                                 const isActive = item.active
                                 const isWaiting = cs.status === 'waiting'
                                 const statusText = cs.tool
