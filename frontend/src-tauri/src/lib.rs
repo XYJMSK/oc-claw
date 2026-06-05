@@ -7525,9 +7525,10 @@ async fn get_claude_sessions(state: tauri::State<'_, ClaudeState>) -> Result<Vec
     // Mark sessions' active tab:
     // - Ghostty: match by terminal ID
     // - CC running inside Cursor's integrated terminal: check if Cursor is frontmost
-    // - Cursor IDE sessions: prefer the per-window focus state reported by the
-    //   bound extension port (`/window-meta` → `focused`); fall back to the
-    //   coarse "is any Cursor frontmost" check when no port is bound
+    // - Cursor IDE sessions: on Windows, prefer the per-window focus state
+    //   reported by the bound extension port (`/window-meta` → `focused`),
+    //   falling back to the coarse "is any Cursor frontmost" check when no port
+    //   is bound. macOS keeps the original frontmost-app behavior unchanged.
     // - Codex standalone app: check if Codex/Code is frontmost
     let frontmost = get_frontmost_app_name();
     let cursor_is_active = is_cursor_frontmost_app(&frontmost);
@@ -7535,10 +7536,13 @@ async fn get_claude_sessions(state: tauri::State<'_, ClaudeState>) -> Result<Vec
     // While the user is interacting with our own panel, Cursor's window loses
     // OS focus. Treat the panel being frontmost as "still on Cursor" so a
     // completed session isn't (re)surfaced just because the user clicked oc-claw.
+    #[cfg(target_os = "windows")]
     let panel_is_frontmost = frontmost == "oc-claw";
     // Cache `/window-meta` focus lookups so multiple sessions sharing one
     // Cursor window only hit the extension once per poll.
+    #[cfg(target_os = "windows")]
     let mut cursor_focus_cache: std::collections::HashMap<u16, bool> = std::collections::HashMap::new();
+    #[cfg(target_os = "windows")]
     let mut cursor_window_focused = |port: u16| -> bool {
         *cursor_focus_cache
             .entry(port)
@@ -7556,10 +7560,17 @@ async fn get_claude_sessions(state: tauri::State<'_, ClaudeState>) -> Result<Vec
     }
     for s in &mut list {
         if s.source == "cursor" {
-            s.is_active_tab = match s.cursor_port {
-                Some(port) => cursor_window_focused(port) || panel_is_frontmost,
-                None => cursor_is_active,
-            };
+            #[cfg(target_os = "windows")]
+            {
+                s.is_active_tab = match s.cursor_port {
+                    Some(port) => cursor_window_focused(port) || panel_is_frontmost,
+                    None => cursor_is_active,
+                };
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                s.is_active_tab = cursor_is_active;
+            }
             continue;
         }
         if s.is_active_tab {
