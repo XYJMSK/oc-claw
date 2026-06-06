@@ -350,6 +350,7 @@
     "titleCursor": "Statistiques Cursor",
     "titleGemini": "Statistiques Gemini CLI",
     "titleHermes": "Statistiques Hermes Agent",
+    "titleOpencode": "Statistiques opencode",
     "last14Days": "14 derniers jours",
     "totalTokens": "Tokens totaux",
     "sessionsCount": "session(s)",

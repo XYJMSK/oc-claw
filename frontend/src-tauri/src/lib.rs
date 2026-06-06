@@ -7152,6 +7152,133 @@ fn collect_hermes_stats() -> Result<ClaudeStats, String> {
     })
 }
 
+/// opencode persists per-message token usage in a local SQLite DB
+/// (`~/.local/share/opencode/opencode.db`). Assistant messages store a JSON
+/// `data` blob with `tokens.{input,output,cache.read,cache.write}`, `cost`,
+/// `modelID` and a millisecond `time.created`. We aggregate the last 14 days
+/// into the shared ClaudeStats shape, mirroring `collect_hermes_stats`.
+fn collect_opencode_stats() -> Result<ClaudeStats, String> {
+    let home = dirs::home_dir().ok_or("no home dir")?;
+    // opencode uses the XDG data dir on every platform; also check the macOS
+    // Application Support location as a fallback.
+    let mut candidates = vec![home.join(".local").join("share").join("opencode").join("opencode.db")];
+    #[cfg(target_os = "macos")]
+    candidates.push(home.join("Library").join("Application Support").join("opencode").join("opencode.db"));
+    let db_path = match candidates.into_iter().find(|p| p.exists()) {
+        Some(p) => p,
+        None => return Ok(empty_claude_stats()),
+    };
+
+    let conn = rusqlite::Connection::open_with_flags(
+        &db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    ).map_err(|e| format!("open opencode.db: {}", e))?;
+
+    // opencode migrated message storage from `message` to `session_message`
+    // (the latter adds a `type`/`seq` column). Read whichever currently holds
+    // rows so we use the active table and never double-count migrated copies.
+    let count_sm: i64 = conn
+        .query_row("SELECT COUNT(*) FROM session_message", [], |r| r.get(0))
+        .unwrap_or(-1);
+    let table = if count_sm > 0 { "session_message" } else { "message" };
+
+    let now = chrono::Utc::now();
+    let cutoff_ms = (now - chrono::Duration::days(14)).timestamp_millis();
+
+    let mut daily_map: std::collections::BTreeMap<String, ClaudeDailyStats> = std::collections::BTreeMap::new();
+    for i in (0..14).rev() {
+        let day = (chrono::Local::now() - chrono::Duration::days(i)).format("%Y-%m-%d").to_string();
+        daily_map.insert(day.clone(), ClaudeDailyStats {
+            date: day, input_tokens: 0, output_tokens: 0,
+            cache_read_tokens: 0, cache_write_tokens: 0, messages: 0, sessions: 0,
+        });
+    }
+    let mut day_sessions: std::collections::HashMap<String, std::collections::HashSet<String>> = std::collections::HashMap::new();
+
+    let mut total_input = 0u64;
+    let mut total_output = 0u64;
+    let mut total_cache_read = 0u64;
+    let mut total_cache_write = 0u64;
+    let mut total_messages = 0u64;
+    let mut sessions_set: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut model = String::new();
+
+    let sql = format!("SELECT session_id, time_created, data FROM \"{}\"", table);
+    let mut stmt = conn.prepare(&sql).map_err(|e| format!("prepare: {}", e))?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0).unwrap_or_default(),
+            row.get::<_, i64>(1).unwrap_or(0),
+            row.get::<_, String>(2).unwrap_or_default(),
+        ))
+    }).map_err(|e| format!("query: {}", e))?;
+
+    for row in rows {
+        let (session_id, ts_raw, data_str) = row.map_err(|e| format!("row: {}", e))?;
+        // opencode stores time_created as unix ms; tolerate seconds just in case.
+        let ts_ms = if ts_raw > 1_000_000_000_000 { ts_raw } else { ts_raw * 1000 };
+        if ts_ms < cutoff_ms { continue; }
+        let data: serde_json::Value = match serde_json::from_str(&data_str) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        // Only assistant messages carry a `tokens` object; user/system rows skip.
+        let tokens = match data.get("tokens") {
+            Some(t) if t.is_object() => t,
+            _ => continue,
+        };
+        let inp = tokens.get("input").and_then(|v| v.as_u64()).unwrap_or(0);
+        let out = tokens.get("output").and_then(|v| v.as_u64()).unwrap_or(0);
+        let cache = tokens.get("cache");
+        let cr = cache.and_then(|c| c.get("read")).and_then(|v| v.as_u64()).unwrap_or(0);
+        let cw = cache.and_then(|c| c.get("write")).and_then(|v| v.as_u64()).unwrap_or(0);
+        if inp == 0 && out == 0 && cr == 0 && cw == 0 { continue; }
+
+        let day = chrono::DateTime::from_timestamp_millis(ts_ms)
+            .map(|dt| dt.with_timezone(&chrono::Local).format("%Y-%m-%d").to_string())
+            .unwrap_or_default();
+
+        if let Some(entry) = daily_map.get_mut(&day) {
+            entry.input_tokens += inp;
+            entry.output_tokens += out;
+            entry.cache_read_tokens += cr;
+            entry.cache_write_tokens += cw;
+            entry.messages += 1;
+            day_sessions.entry(day.clone()).or_default().insert(session_id.clone());
+        }
+
+        total_input += inp;
+        total_output += out;
+        total_cache_read += cr;
+        total_cache_write += cw;
+        total_messages += 1;
+        sessions_set.insert(session_id.clone());
+        if model.is_empty() {
+            if let Some(m) = data.get("modelID").and_then(|v| v.as_str()) {
+                if !m.is_empty() { model = m.to_string(); }
+            }
+        }
+    }
+
+    for (day, set) in day_sessions {
+        if let Some(entry) = daily_map.get_mut(&day) {
+            entry.sessions = set.len() as u64;
+        }
+    }
+
+    let daily_stats: Vec<ClaudeDailyStats> = daily_map.into_values().collect();
+    Ok(ClaudeStats {
+        total_input_tokens: total_input,
+        total_output_tokens: total_output,
+        total_cache_read_tokens: total_cache_read,
+        total_cache_write_tokens: total_cache_write,
+        total_messages,
+        total_sessions: sessions_set.len() as u64,
+        daily_stats,
+        model,
+    })
+}
+
 fn collect_claude_project_jsonl_files() -> Vec<PathBuf> {
     let home = dirs::home_dir().unwrap_or_default();
     let claude_projects = home.join(".claude").join("projects");
@@ -7617,7 +7744,7 @@ async fn get_claude_sessions(state: tauri::State<'_, ClaudeState>) -> Result<Vec
     let sessions = state.sessions.lock().map_err(|e| e.to_string())?;
     let active_tid = get_active_ghostty_terminal_id();
     let mut list: Vec<ClaudeSession> = sessions.values()
-        .filter(|s| !s.cwd.is_empty() || s.source == "cursor")
+        .filter(|s| !s.cwd.is_empty() || s.source == "cursor" || s.source == "opencode")
         .filter(|s| !is_codex_internal_utility_session(s))
         .cloned()
         .collect();
@@ -7670,6 +7797,15 @@ async fn get_claude_sessions(state: tauri::State<'_, ClaudeState>) -> Result<Vec
             {
                 s.is_active_tab = cursor_is_active;
             }
+            continue;
+        }
+        // opencode runs in a terminal with no stable window of its own. On
+        // Windows, suppress the completion popup when the hosting terminal
+        // window is foregrounded (or our own panel is). macOS keeps matching by
+        // the Ghostty terminal id captured by the plugin.
+        #[cfg(target_os = "windows")]
+        if s.source == "opencode" {
+            s.is_active_tab = windows_terminal_session_active(s.pid) || panel_is_frontmost;
             continue;
         }
         if s.is_active_tab {
@@ -8247,10 +8383,10 @@ async fn get_claude_stats(source: Option<String>) -> Result<ClaudeStats, String>
         return Ok(empty_claude_stats());
     }
 
-    // opencode has no local token-usage source oc-claw can parse, so return
-    // empty stats and let the frontend render a "not supported" hint.
+    // opencode persists token usage in a local SQLite DB
+    // (~/.local/share/opencode/opencode.db); parse it for real stats.
     if source == "opencode" {
-        return Ok(empty_claude_stats());
+        return collect_opencode_stats();
     }
 
     if source == "gemini" {
@@ -9706,6 +9842,38 @@ fn find_running_claude_desktop_pid() -> Option<u32> {
         let _ = CloseHandle(snapshot);
     }
     result
+}
+
+/// PID owning the current foreground window, or None.
+#[cfg(target_os = "windows")]
+fn foreground_window_pid() -> Option<u32> {
+    use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
+    unsafe {
+        let fg = GetForegroundWindow();
+        if fg.0 == std::ptr::null_mut() {
+            return None;
+        }
+        let mut pid: u32 = 0;
+        GetWindowThreadProcessId(fg, Some(&mut pid));
+        if pid == 0 { None } else { Some(pid) }
+    }
+}
+
+/// Whether a terminal-hosted CLI session (e.g. opencode) is the one the user is
+/// currently looking at: true when the foreground window belongs to the
+/// terminal that hosts `pid` (its nearest window-owning ancestor). Used to
+/// suppress the completion popup when the relevant terminal is already focused.
+/// The CLI process itself has no window, so we compare against its hosting
+/// terminal's window (works for Windows Terminal; classic conhost — whose
+/// window is a child, not an ancestor — falls back to "not active").
+#[cfg(target_os = "windows")]
+fn windows_terminal_session_active(pid: Option<u32>) -> bool {
+    let pid = match pid { Some(p) => p, None => return false };
+    let fg_pid = match foreground_window_pid() { Some(p) => p, None => return false };
+    match find_ancestor_window_pid(pid) {
+        Some(term_pid) => term_pid == fg_pid,
+        None => false,
+    }
 }
 
 /// Walk up the process tree from `pid` to find the nearest ancestor that owns
