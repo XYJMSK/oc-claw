@@ -17,6 +17,15 @@ static EFFICIENCY_HOVER_THREAD_ALIVE: AtomicBool = AtomicBool::new(false);
 /// decide which detection region to check — collapsed notch area vs expanded
 /// panel area).
 static EFFICIENCY_EXPANDED: AtomicBool = AtomicBool::new(false);
+/// Windows-only: whether the global outside-click watcher should run. The
+/// expanded mini panel may never take OS focus (auto-expanded completion
+/// popups), so the window-blur close path never fires. This watcher polls the
+/// global mouse buttons and emits `mini-outside-click` when the user clicks
+/// outside the mini window, letting the frontend collapse the panel.
+#[cfg(target_os = "windows")]
+static OUTSIDE_CLICK_WATCH_ACTIVE: AtomicBool = AtomicBool::new(false);
+#[cfg(target_os = "windows")]
+static OUTSIDE_CLICK_WATCH_THREAD_ALIVE: AtomicBool = AtomicBool::new(false);
 /// Cached screen geometry for the notch hover poll thread so it doesn't need
 /// to access NSWindow from a background thread.
 /// (screen_x, screen_y, screen_width, screen_height, notch_offset)
@@ -655,7 +664,7 @@ async fn invoke_tool(url: &str, token: &str, tool: &str, args: serde_json::Value
     if !status.is_success() {
         return Err(format!("remote API error ({}): {}", status, text));
     }
-    serde_json::from_str(&text).map_err(|e| format!("parse remote response: {} body: {}", e, &text[..text.len().min(200)]))
+    serde_json::from_str(&text).map_err(|e| format!("parse remote response: {} body: {}", e, truncate_chars(&text, 200)))
 }
 
 /// Extract sessions array from remote API response, handling both formats:
@@ -3798,6 +3807,102 @@ async fn set_efficiency_hover_tracking(app: tauri::AppHandle, active: bool) -> R
         std::thread::spawn(move || efficiency_hover_poll(app2));
     }
     Ok(())
+}
+
+/// Whether the OS mouse cursor is currently within the mini window's bounds.
+///
+/// The mini window is always-on-top, so Windows hands it focus whenever
+/// another window is minimized. The frontend's focus→auto-expand path uses
+/// this to tell a genuine mascot click (cursor over the window) apart from an
+/// incidental focus grab (cursor over the other window's minimize button),
+/// preventing the panel from popping up when the user minimizes any app.
+#[tauri::command]
+fn cursor_over_mini_window(app: tauri::AppHandle) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+        use windows::Win32::Foundation::POINT;
+        if let Some(win) = app.get_webview_window("mini") {
+            if let (Ok(pos), Ok(size)) = (win.outer_position(), win.outer_size()) {
+                let mut pt = POINT::default();
+                let ok = unsafe { GetCursorPos(&mut pt).is_ok() };
+                if ok {
+                    return pt.x >= pos.x
+                        && pt.x <= pos.x + size.width as i32
+                        && pt.y >= pos.y
+                        && pt.y <= pos.y + size.height as i32;
+                }
+            }
+        }
+        false
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = app;
+        true
+    }
+}
+
+/// Start/stop the Windows outside-click watcher. No-op on other platforms,
+/// where window blur already closes the expanded panel.
+#[tauri::command]
+fn set_outside_click_watch(app: tauri::AppHandle, active: bool) {
+    #[cfg(target_os = "windows")]
+    {
+        OUTSIDE_CLICK_WATCH_ACTIVE.store(active, Ordering::SeqCst);
+        if active && !OUTSIDE_CLICK_WATCH_THREAD_ALIVE.load(Ordering::SeqCst) {
+            let app2 = app.clone();
+            std::thread::spawn(move || outside_click_watch_poll(app2));
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (app, active);
+    }
+}
+
+/// Windows polling loop: detect a fresh left/right mouse press and, if the
+/// cursor is outside the mini window's bounds, emit `mini-outside-click` so the
+/// frontend can collapse the panel. Runs only while the panel is expanded.
+#[cfg(target_os = "windows")]
+fn outside_click_watch_poll(app: tauri::AppHandle) {
+    use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+    use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+    use windows::Win32::Foundation::POINT;
+    const VK_LBUTTON: i32 = 0x01;
+    const VK_RBUTTON: i32 = 0x02;
+
+    OUTSIDE_CLICK_WATCH_THREAD_ALIVE.store(true, Ordering::SeqCst);
+    // Only react on the press edge so one click emits at most one event.
+    let mut prev_pressed = false;
+    while OUTSIDE_CLICK_WATCH_ACTIVE.load(Ordering::SeqCst) {
+        let pressed = unsafe {
+            ((GetAsyncKeyState(VK_LBUTTON) as u16) & 0x8000) != 0
+                || ((GetAsyncKeyState(VK_RBUTTON) as u16) & 0x8000) != 0
+        };
+        if pressed && !prev_pressed {
+            // Default to "inside" when geometry can't be read, so we never
+            // collapse on an ambiguous reading.
+            let mut inside = true;
+            if let Some(win) = app.get_webview_window("mini") {
+                if let (Ok(pos), Ok(size)) = (win.outer_position(), win.outer_size()) {
+                    let mut pt = POINT::default();
+                    if unsafe { GetCursorPos(&mut pt).is_ok() } {
+                        inside = pt.x >= pos.x
+                            && pt.x <= pos.x + size.width as i32
+                            && pt.y >= pos.y
+                            && pt.y <= pos.y + size.height as i32;
+                    }
+                }
+            }
+            if !inside {
+                let _ = app.emit("mini-outside-click", ());
+            }
+        }
+        prev_pressed = pressed;
+        std::thread::sleep(std::time::Duration::from_millis(40));
+    }
+    OUTSIDE_CLICK_WATCH_THREAD_ALIVE.store(false, Ordering::SeqCst);
 }
 
 /// Background polling loop for efficiency-mode hover.
@@ -7357,7 +7462,35 @@ fn get_frontmost_app_name() -> String {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+/// Windows equivalent: resolve the foreground window's owning process and
+/// return its exe file stem (e.g. "Cursor" from "...\Cursor.exe", "oc-claw",
+/// "Code"). The shared matchers (`is_cursor_frontmost_app`, etc.) compare
+/// against these stems, so completion popups can be suppressed while the
+/// relevant app is focused.
+#[cfg(target_os = "windows")]
+fn get_frontmost_app_name() -> String {
+    use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
+    unsafe {
+        let fg = GetForegroundWindow();
+        if fg.0 == std::ptr::null_mut() {
+            return String::new();
+        }
+        let mut pid: u32 = 0;
+        GetWindowThreadProcessId(fg, Some(&mut pid));
+        if pid == 0 {
+            return String::new();
+        }
+        match get_process_exe_path(pid) {
+            Some(path) => std::path::Path::new(&path)
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default(),
+            None => String::new(),
+        }
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn get_frontmost_app_name() -> String { String::new() }
 
 fn is_cursor_frontmost_app(name: &str) -> bool {
@@ -7463,11 +7596,29 @@ async fn get_claude_sessions(state: tauri::State<'_, ClaudeState>) -> Result<Vec
     // Mark sessions' active tab:
     // - Ghostty: match by terminal ID
     // - CC running inside Cursor's integrated terminal: check if Cursor is frontmost
-    // - Cursor IDE sessions: set at Stop time in process_claude_event
+    // - Cursor IDE sessions: on Windows, prefer the per-window focus state
+    //   reported by the bound extension port (`/window-meta` → `focused`),
+    //   falling back to the coarse "is any Cursor frontmost" check when no port
+    //   is bound. macOS keeps the original frontmost-app behavior unchanged.
     // - Codex standalone app: check if Codex/Code is frontmost
     let frontmost = get_frontmost_app_name();
     let cursor_is_active = is_cursor_frontmost_app(&frontmost);
     let codex_is_active = is_codex_frontmost_app(&frontmost);
+    // While the user is interacting with our own panel, Cursor's window loses
+    // OS focus. Treat the panel being frontmost as "still on Cursor" so a
+    // completed session isn't (re)surfaced just because the user clicked oc-claw.
+    #[cfg(target_os = "windows")]
+    let panel_is_frontmost = frontmost == "oc-claw";
+    // Cache `/window-meta` focus lookups so multiple sessions sharing one
+    // Cursor window only hit the extension once per poll.
+    #[cfg(target_os = "windows")]
+    let mut cursor_focus_cache: std::collections::HashMap<u16, bool> = std::collections::HashMap::new();
+    #[cfg(target_os = "windows")]
+    let mut cursor_window_focused = |port: u16| -> bool {
+        *cursor_focus_cache
+            .entry(port)
+            .or_insert_with(|| get_cursor_window_meta(port).map(|m| m.focused).unwrap_or(false))
+    };
     let is_ghostty = |s: &ClaudeSession| -> bool {
         matches!(s.host_terminal.as_deref(), Some("Ghostty" | "ghostty"))
     };
@@ -7480,7 +7631,17 @@ async fn get_claude_sessions(state: tauri::State<'_, ClaudeState>) -> Result<Vec
     }
     for s in &mut list {
         if s.source == "cursor" {
-            s.is_active_tab = cursor_is_active;
+            #[cfg(target_os = "windows")]
+            {
+                s.is_active_tab = match s.cursor_port {
+                    Some(port) => cursor_window_focused(port) || panel_is_frontmost,
+                    None => cursor_is_active,
+                };
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                s.is_active_tab = cursor_is_active;
+            }
             continue;
         }
         if s.is_active_tab {
@@ -11478,8 +11639,8 @@ fn load_hermes_conversation(session_id: &str) -> Result<Vec<ChatMessage>, String
             // Tool result: show tool_name and truncated content
             let name = tool_name.unwrap_or_default();
             let body = content.unwrap_or_default();
-            let truncated = if body.len() > 300 {
-                format!("{}…", &body[..300])
+            let truncated = if body.chars().count() > 300 {
+                format!("{}…", truncate_chars(&body, 300))
             } else {
                 body
             };
@@ -11505,8 +11666,8 @@ fn load_hermes_conversation(session_id: &str) -> Result<Vec<ChatMessage>, String
                             .and_then(|f| f.get("arguments"))
                             .and_then(|a| a.as_str())
                             .unwrap_or("");
-                        let args_truncated = if fn_args.len() > 200 {
-                            format!("{}…", &fn_args[..200])
+                        let args_truncated = if fn_args.chars().count() > 200 {
+                            format!("{}…", truncate_chars(fn_args, 200))
                         } else {
                             fn_args.to_string()
                         };
@@ -13848,7 +14009,7 @@ print(json.dumps(rows))
     }
 
     let rows: Vec<serde_json::Value> = serde_json::from_str(trimmed)
-        .map_err(|e| format!("parse hermes remote stats: {} (output: {})", e, &trimmed[..trimmed.len().min(200)]))?;
+        .map_err(|e| format!("parse hermes remote stats: {} (output: {})", e, truncate_chars(trimmed, 200)))?;
 
     let now = chrono::Local::now();
     let mut daily_map: std::collections::BTreeMap<String, ClaudeDailyStats> = std::collections::BTreeMap::new();
@@ -14572,13 +14733,20 @@ print(json.dumps(result))
     let output = ssh_exec(&ssh_host, &ssh_user, &cmd).await?;
     let trimmed = output.trim();
     let result: serde_json::Value = serde_json::from_str(trimmed)
-        .map_err(|e| format!("parse remote plugin install: {} (output: {})", e, &trimmed[..trimmed.len().min(300)]))?;
+        .map_err(|e| format!("parse remote plugin install: {} (output: {})", e, truncate_chars(trimmed, 300)))?;
     Ok(result)
 }
 
 /// Escape a string for use inside single quotes in a shell command.
 fn shell_escape_single(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// Truncate a string to at most `max_chars` characters for diagnostics.
+/// Uses char boundaries (not byte indices) so multibyte text (e.g. Chinese)
+/// in error messages never panics on a non-boundary slice.
+fn truncate_chars(s: &str, max_chars: usize) -> String {
+    s.chars().take(max_chars).collect()
 }
 
 // ─── Cursor Integration ───────────────────────────────────────────────
@@ -16060,7 +16228,7 @@ pub fn run() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, set_efficiency_hover_tracking, resize_mini_height, move_mini_by, get_mini_origin, get_mini_monitor_rect, set_mini_origin, set_ime_mode, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, install_cursor_hooks, install_gemini_hooks, install_hermes_hooks, test_hermes_hook, install_hermes_remote_plugin, get_hermes_remote_stats, get_hermes_remote_sessions, get_hermes_sessions_summary, get_hermes_recent_activity, get_hermes_remote_recent_activity, test_hermes_ssh, remove_claude_session, resolve_claude_permission, get_claude_stats, open_url, activate_app, focus_cursor_terminal, check_ax_permission, request_ax_permission, jump_to_claude_terminal, check_for_update, run_update, close_ssh, read_local_file, list_backgrounds, save_background, get_background_data, exit_app, get_ssh_key_info, reset_ssh, get_ui_scale, list_custom_codex_pets, open_codex_pets_dir, import_codex_pet, pick_codex_pet_folder, reassert_floating, spawn_demo_mascot, close_demo_mascot, close_demo_mascots, debug_log, update_tray_language, set_pet_mode_window, set_pet_context_menu, set_pet_pomodoro_active, get_now_playing, get_system_idle_time, get_keyboard_idle_secs])
+        .invoke_handler(tauri::generate_handler![get_status, send_chat, open_detail_panel, save_character_gif, delete_character_assets, delete_character_gif, get_agents, get_health, get_agent_metrics, interrupt_agent, scan_characters, get_agent_extra_info, open_mini, close_mini, set_mini_expanded, set_mini_size, set_efficiency_hover_tracking, cursor_over_mini_window, set_outside_click_watch, resize_mini_height, move_mini_by, get_mini_origin, get_mini_monitor_rect, set_mini_origin, set_ime_mode, get_agent_sessions, get_session_preview, get_session_messages, get_active_sessions, proxy_post, play_sound, get_claude_sessions, get_claude_conversation, install_claude_hooks, install_cursor_hooks, install_gemini_hooks, install_hermes_hooks, test_hermes_hook, install_hermes_remote_plugin, get_hermes_remote_stats, get_hermes_remote_sessions, get_hermes_sessions_summary, get_hermes_recent_activity, get_hermes_remote_recent_activity, test_hermes_ssh, remove_claude_session, resolve_claude_permission, get_claude_stats, open_url, activate_app, focus_cursor_terminal, check_ax_permission, request_ax_permission, jump_to_claude_terminal, check_for_update, run_update, close_ssh, read_local_file, list_backgrounds, save_background, get_background_data, exit_app, get_ssh_key_info, reset_ssh, get_ui_scale, list_custom_codex_pets, open_codex_pets_dir, import_codex_pet, pick_codex_pet_folder, reassert_floating, spawn_demo_mascot, close_demo_mascot, close_demo_mascots, debug_log, update_tray_language, set_pet_mode_window, set_pet_context_menu, set_pet_pomodoro_active, get_now_playing, get_system_idle_time, get_keyboard_idle_secs])
         .manage(ActiveAgentPid { pid: Mutex::new(None) })
         .manage(ClaudeState { sessions: Arc::new(Mutex::new(HashMap::new())), pending_permissions: Arc::new(Mutex::new(HashMap::new())), dismissed: Arc::new(Mutex::new(std::collections::HashSet::new())) })
         .run(tauri::generate_context!())
