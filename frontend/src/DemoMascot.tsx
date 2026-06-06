@@ -209,6 +209,7 @@ export function DemoMascot({ functional = false }: { functional?: boolean }) {
     <div
       onPointerDown={handlePointerDown}
       style={{
+        position: 'relative',
         width: '100%',
         height: '100%',
         display: 'flex',
@@ -225,6 +226,24 @@ export function DemoMascot({ functional = false }: { functional?: boolean }) {
         enableHoverJump
         suppressHover={dragging}
       />
+      {/* Status indicator dot, mirroring the primary mascot's bottom-right
+          light so coding-mode extra mascots show the same working/waiting/idle
+          status. Decorative demo mascots stay clean. */}
+      {functional && (
+        <div
+          style={{
+            position: 'absolute',
+            bottom: 8,
+            right: 10,
+            width: 5,
+            height: 5,
+            borderRadius: '50%',
+            background: waiting ? '#f59e0b' : working ? '#2ecc71' : '#777',
+            border: '1.1px solid rgba(0,0,0,0.3)',
+            pointerEvents: 'none',
+          }}
+        />
+      )}
     </div>
   )
 }
