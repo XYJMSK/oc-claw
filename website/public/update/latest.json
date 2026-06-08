@@ -1,27 +1,27 @@
 {
   "platforms": {
     "macos": {
-      "version": "1.8.5",
-      "url": "https://github.com/rainnoon/oc-claw/releases/download/v1.8.5/oc-claw_1.8.5_aarch64.dmg",
+      "version": "1.8.6",
+      "url": "https://github.com/rainnoon/oc-claw/releases/download/v1.8.6/oc-claw_1.8.6_aarch64.dmg",
       "notes_i18n": {
-        "zh": "新增 Gemini CLI 与 Hermes Agent 集成；多项 Windows 与稳定性修复",
-        "en": "Gemini CLI and Hermes Agent integrations; various Windows and stability fixes",
-        "ja": "Gemini CLI と Hermes Agent の統合を追加、Windows と安定性の各種修正",
-        "ko": "Gemini CLI 및 Hermes Agent 통합 추가, 다양한 Windows 및 안정성 수정",
-        "es": "Integraciones de Gemini CLI y Hermes Agent; varias correcciones de Windows y estabilidad",
-        "fr": "Intégrations Gemini CLI et Hermes Agent ; diverses corrections Windows et de stabilité"
+        "zh": "新增 opencode 集成与 Windows 端 Codex 支持；多看板娘模式；多项稳定性修复",
+        "en": "opencode integration and Codex on Windows; multi-mascot mode; various stability fixes",
+        "ja": "opencode 統合と Windows での Codex 対応、マルチマスコットモード、各種安定性の修正",
+        "ko": "opencode 통합 및 Windows Codex 지원, 멀티 마스코트 모드, 다양한 안정성 수정",
+        "es": "Integración de opencode y Codex en Windows; modo multi-mascota; varias correcciones de estabilidad",
+        "fr": "Intégration d'opencode et Codex sur Windows ; mode multi-mascotte ; diverses corrections de stabilité"
       }
     },
     "windows": {
-      "version": "1.8.5",
-      "url": "https://github.com/rainnoon/oc-claw/releases/download/v1.8.5/oc-claw_1.8.5_x64-setup.exe",
+      "version": "1.8.6",
+      "url": "https://github.com/rainnoon/oc-claw/releases/download/v1.8.6/oc-claw_1.8.6_x64-setup.exe",
       "notes_i18n": {
-        "zh": "新增 Gemini CLI 与 Hermes Agent 集成；多项 Windows 与稳定性修复",
-        "en": "Gemini CLI and Hermes Agent integrations; various Windows and stability fixes",
-        "ja": "Gemini CLI と Hermes Agent の統合を追加、Windows と安定性の各種修正",
-        "ko": "Gemini CLI 및 Hermes Agent 통합 추가, 다양한 Windows 및 안정성 수정",
-        "es": "Integraciones de Gemini CLI y Hermes Agent; varias correcciones de Windows y estabilidad",
-        "fr": "Intégrations Gemini CLI et Hermes Agent ; diverses corrections Windows et de stabilité"
+        "zh": "新增 opencode 集成与 Windows 端 Codex 支持；多看板娘模式；多项稳定性修复",
+        "en": "opencode integration and Codex on Windows; multi-mascot mode; various stability fixes",
+        "ja": "opencode 統合と Windows での Codex 対応、マルチマスコットモード、各種安定性の修正",
+        "ko": "opencode 통합 및 Windows Codex 지원, 멀티 마스코트 모드, 다양한 안정성 수정",
+        "es": "Integración de opencode y Codex en Windows; modo multi-mascota; varias correcciones de estabilidad",
+        "fr": "Intégration d'opencode et Codex sur Windows ; mode multi-mascotte ; diverses corrections de stabilité"
       }
     }
   },
