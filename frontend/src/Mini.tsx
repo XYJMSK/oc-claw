@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { load } from '@tauri-apps/plugin-store'
 import { emit, listen } from '@tauri-apps/api/event'
-import { ChevronDown, Loader2, X, Pin, Bell, BellOff, Settings, Asterisk, Trash2, Cloud } from 'lucide-react'
+import { ChevronDown, Loader2, X, Pin, Bell, BellOff, Settings, Asterisk, Trash2, Cloud, Maximize2 } from 'lucide-react'
 import { AnimatePresence, motion } from 'motion/react'
 import ReactMarkdown from 'react-markdown'
 import { useTranslation } from 'react-i18next'
@@ -134,6 +134,11 @@ function petActionPriority(action: PetAction): number {
 // interactivity don't disagree at the mascot edge.
 const LARGE_MASCOT_HITBOX_WIDTH_MULTIPLIER = 2.4
 const LARGE_MASCOT_HITBOX_HEIGHT_MULTIPLIER = 2.8
+const LARGE_MASCOT_SCALE_MIN = 1
+const LARGE_MASCOT_SCALE_MAX = 6
+const MASCOT_RESIZE_HANDLE_SIZE = 34
+const MASCOT_RESIZE_ICON_SIZE = 26
+const MASCOT_RESIZE_CURSOR = 'nwse-resize'
 // Peek hit-area width as a fraction of the mascot visual size. Shared by the
 // click hitbox check and the visual cursor strip so they always agree.
 const PEEK_HIT_WIDTH_RATIO = 0.5
@@ -142,6 +147,11 @@ const MOVE_DRAG_THRESHOLD = 1
 function clampMascotScale(value: number): number {
   if (!Number.isFinite(value)) return 1
   return Math.min(MASCOT_SCALE_MAX, Math.max(MASCOT_SCALE_MIN, value))
+}
+
+function clampLargeMascotScale(value: number): number {
+  if (!Number.isFinite(value)) return 5
+  return Math.min(LARGE_MASCOT_SCALE_MAX, Math.max(LARGE_MASCOT_SCALE_MIN, value))
 }
 
 function ChatList({ messages, accentColor }: { messages: { role: string; text: string }[]; accentColor: string }) {
@@ -716,6 +726,7 @@ export default function Mini() {
   // sprite's hover-jump while dragging so walkDir → run-left/run-right
   // actually shows). Keep both in sync via setMascotDragActive below.
   const [mascotDragActive, _setMascotDragActive] = useState(false)
+  const [resizeHandleHovered, setResizeHandleHovered] = useState(false)
   const setMascotDragActive = useCallback((v: boolean) => {
     mascotDragActiveRef.current = v
     _setMascotDragActive(v)
@@ -2906,6 +2917,129 @@ export default function Mini() {
     e.preventDefault()
   }, [])
 
+  const applyLargeMascotScale = useCallback(async (value: number, persist = true) => {
+    const clamped = clampLargeMascotScale(value)
+    setLargeMascotScale(clamped)
+    largeMascotScaleRef.current = clamped
+    emit('mascot-visual-size', {
+      size: Math.round(MASCOT_BASE_SIZE * mascotScaleRef.current) * clamped,
+    }).catch(() => {})
+
+    if (appModeRef.current === 'pet') {
+      await invoke('set_pet_mode_window', {
+        active: true,
+        mascotScale: mascotScaleRef.current,
+        largeMascotScale: clamped,
+      }).catch(() => {})
+    } else {
+      await invoke('set_mini_expanded', {
+        expanded: false,
+        position: mascotPositionRef.current,
+        efficiency: true,
+        keepPosition: true,
+        mascotScale: mascotScaleRef.current,
+        largeMascot: true,
+        largeMascotScale: clamped,
+      }).catch(() => {})
+    }
+
+    if (persist) {
+      const store = await load('settings.json', { defaults: {}, autoSave: true })
+      await store.set('large_mascot_scale', clamped)
+      await store.save()
+    }
+  }, [])
+
+  useEffect(() => {
+    const unlisten = listen<{ scale?: number }>('mascot-scale-change', (ev) => {
+      const scale = ev.payload?.scale
+      if (typeof scale === 'number') {
+        applyLargeMascotScale(scale, true).catch(() => {})
+      }
+    })
+    return () => {
+      unlisten.then((fn) => fn())
+    }
+  }, [applyLargeMascotScale])
+
+  const handleMascotResizePointerDown = useCallback((e: React.PointerEvent) => {
+    if (e.button !== 0 || e.ctrlKey || collapsingRef.current || expandedRef.current) return
+    if (settingsModeRef.current || settingsTransitioningRef.current) return
+    e.preventDefault()
+    e.stopPropagation()
+    setMascotDragActive(true)
+
+    const startX = e.screenX
+    const startY = e.screenY
+    const startScale = largeMascotScaleRef.current
+    const startSize = Math.round(MASCOT_BASE_SIZE * mascotScaleRef.current) * startScale
+    const baseSize = Math.max(1, Math.round(MASCOT_BASE_SIZE * mascotScaleRef.current))
+    const aspect = 208 / 192
+    const pid = e.pointerId
+    let rafId: number | null = null
+    let latestScale = startScale
+    let applying = false
+    let dirty = false
+
+    const flush = () => {
+      rafId = null
+      if (applying) {
+        dirty = true
+        return
+      }
+      applying = true
+      applyLargeMascotScale(latestScale, false)
+        .finally(() => {
+          applying = false
+          if (dirty) {
+            dirty = false
+            schedule()
+          }
+        })
+    }
+
+    const schedule = () => {
+      if (rafId !== null) return
+      rafId = requestAnimationFrame(flush)
+    }
+
+    const onMove = (ev: PointerEvent) => {
+      if (ev.pointerId !== pid) return
+      const dx = ev.screenX - startX
+      const dy = ev.screenY - startY
+      const targetSize = startSize + Math.max(dx, dy / aspect)
+      latestScale = clampLargeMascotScale(targetSize / baseSize)
+      schedule()
+    }
+
+    const cleanup = async () => {
+      if (rafId !== null) {
+        cancelAnimationFrame(rafId)
+        rafId = null
+      }
+      setMascotDragActive(false)
+      updateWalkDir(0)
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+      window.removeEventListener('pointercancel', onCancel)
+      await applyLargeMascotScale(latestScale, true)
+    }
+
+    const onUp = (ev: PointerEvent) => {
+      if (ev.pointerId !== pid) return
+      cleanup().catch(() => {})
+    }
+
+    const onCancel = (ev: PointerEvent) => {
+      if (ev.pointerId !== pid) return
+      cleanup().catch(() => {})
+    }
+
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp, { once: true })
+    window.addEventListener('pointercancel', onCancel, { once: true })
+  }, [applyLargeMascotScale])
+
 
   const handleMascotPointerDown = useCallback(
     (e: React.PointerEvent) => {
@@ -4451,6 +4585,52 @@ export default function Mini() {
                   border: `${collapsedStatusBorder}px solid rgba(0,0,0,0.3)`,
                 }}
               />
+            )}
+            {(largeMascot || miniPet) && (
+              <div
+                data-no-drag
+                onPointerEnter={() => setResizeHandleHovered(true)}
+                onPointerLeave={() => setResizeHandleHovered(false)}
+                onPointerDown={handleMascotResizePointerDown}
+                title={t('settings.largeMascotScale', 'Mascot Size')}
+                style={{
+                  position: 'absolute',
+                  right: 0,
+                  bottom: 0,
+                  width: MASCOT_RESIZE_HANDLE_SIZE,
+                  height: MASCOT_RESIZE_HANDLE_SIZE,
+                  cursor: MASCOT_RESIZE_CURSOR,
+                  pointerEvents: 'auto',
+                  zIndex: 12,
+                  touchAction: 'none',
+                  background: 'rgba(255,255,255,0.01)',
+                  display: 'flex',
+                  alignItems: 'flex-end',
+                  justifyContent: 'flex-end',
+                  padding: 4,
+                }}
+              >
+                <div
+                  style={{
+                    width: MASCOT_RESIZE_ICON_SIZE,
+                    height: MASCOT_RESIZE_ICON_SIZE,
+                    borderRadius: 8,
+                    background: 'rgba(255,255,255,0.94)',
+                    boxShadow: '0 3px 10px rgba(0,0,0,0.22)',
+                    color: '#1f2937',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    cursor: MASCOT_RESIZE_CURSOR,
+                    opacity: resizeHandleHovered ? 1 : 0,
+                    transform: resizeHandleHovered ? 'translateY(0) scale(1) rotate(90deg)' : 'translateY(3px) scale(0.92) rotate(90deg)',
+                    transition: 'opacity 120ms ease, transform 120ms ease',
+                    pointerEvents: 'none',
+                  }}
+                >
+                  <Maximize2 size={15} strokeWidth={2.4} />
+                </div>
+              </div>
             )}
             {/* Pomodoro timer overlay (pet mode, study action) */}
             {appMode === 'pet' && largeMascot && pomodoro?.active && (

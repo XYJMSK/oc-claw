@@ -3,6 +3,7 @@ import { emit, listen } from '@tauri-apps/api/event'
 import { load } from '@tauri-apps/plugin-store'
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
 import { LogicalPosition, LogicalSize } from '@tauri-apps/api/dpi'
+import { Maximize2 } from 'lucide-react'
 import { MiniPetMascot } from './components/MiniPetMascot'
 import { loadCodexPetById, loadDefaultCodexPet, type CodexPet, type CodexPetState } from './lib/codexPet'
 
@@ -24,9 +25,19 @@ function computeMascotSize(mascotScale: number, largeMascotScale: number): numbe
 // shows the corresponding running/idle/jumping animation. State naturally
 // stays in sync because every demo window subscribes to the same events.
 const MASCOT_BASE_SIZE = 43
+const LARGE_MASCOT_SCALE_MIN = 1
+const LARGE_MASCOT_SCALE_MAX = 6
+const MASCOT_RESIZE_HANDLE_SIZE = 34
+const MASCOT_RESIZE_ICON_SIZE = 26
+const MASCOT_RESIZE_CURSOR = 'nwse-resize'
 // Default before the real scale is loaded from settings, matching Mini's
 // defaults (mascot_scale 1 × large_mascot_scale 5).
 const DEFAULT_MASCOT_SIZE = computeMascotSize(1, 5)
+
+function clampLargeMascotScale(value: number): number {
+  if (!Number.isFinite(value)) return 5
+  return Math.min(LARGE_MASCOT_SCALE_MAX, Math.max(LARGE_MASCOT_SCALE_MIN, value))
+}
 
 // `functional` mascots (coding-mode multi-mascot feature) emit
 // `extra-mascot-activate` to the main mini window on a click (no drag) so the
@@ -40,8 +51,11 @@ export function DemoMascot({ functional = false }: { functional?: boolean }) {
   const [waiting, setWaiting] = useState(false)
   const [walkDir, setWalkDir] = useState<-1 | 0 | 1>(0)
   const [dragging, setDragging] = useState(false)
+  const [resizeHandleHovered, setResizeHandleHovered] = useState(false)
   const [size, setSize] = useState(DEFAULT_MASCOT_SIZE)
   const dragActiveRef = useRef(false)
+  const baseSizeRef = useRef(MASCOT_BASE_SIZE)
+  const largeScaleRef = useRef(5)
 
   useEffect(() => {
     let cancelled = false
@@ -63,6 +77,7 @@ export function DemoMascot({ functional = false }: { functional?: boolean }) {
     const applySize = (next: number) => {
       if (cancelled || !Number.isFinite(next) || next <= 0) return
       setSize(next)
+      largeScaleRef.current = clampLargeMascotScale(next / Math.max(1, baseSizeRef.current))
       const win = getCurrentWebviewWindow()
       const boxW = Math.ceil(next)
       const boxH = Math.ceil(next * (208 / 192))
@@ -73,9 +88,13 @@ export function DemoMascot({ functional = false }: { functional?: boolean }) {
         const store = await load('settings.json', { defaults: {}, autoSave: false })
         const ms = (await store.get('mascot_scale')) as number | null
         const lms = (await store.get('large_mascot_scale')) as number | null
+        const mascotScale = typeof ms === 'number' && ms > 0 ? ms : 1
+        const largeScale = clampLargeMascotScale(typeof lms === 'number' && lms > 0 ? lms : 5)
+        baseSizeRef.current = Math.round(MASCOT_BASE_SIZE * mascotScale)
+        largeScaleRef.current = largeScale
         applySize(computeMascotSize(
-          typeof ms === 'number' && ms > 0 ? ms : 1,
-          typeof lms === 'number' && lms > 0 ? lms : 5,
+          mascotScale,
+          largeScale,
         ))
       } catch {
         /* fall back to default size */
@@ -90,6 +109,82 @@ export function DemoMascot({ functional = false }: { functional?: boolean }) {
       unlisten.then((fn) => fn())
     }
   }, [])
+
+  const handleResizePointerDown = useCallback((e: React.PointerEvent) => {
+    if (e.button !== 0 || e.ctrlKey) return
+    e.preventDefault()
+    e.stopPropagation()
+    const startX = e.screenX
+    const startY = e.screenY
+    const startSize = size
+    const baseSize = Math.max(1, baseSizeRef.current)
+    const aspect = 208 / 192
+    const pid = e.pointerId
+    let latestScale = largeScaleRef.current
+    let rafId: number | null = null
+
+    const applyScale = (scale: number) => {
+      const clamped = clampLargeMascotScale(scale)
+      latestScale = clamped
+      largeScaleRef.current = clamped
+      const nextSize = baseSize * clamped
+      setSize(nextSize)
+      const win = getCurrentWebviewWindow()
+      win.setSize(new LogicalSize(Math.ceil(nextSize), Math.ceil(nextSize * aspect))).catch(() => {})
+      emit('mascot-scale-change', { scale: clamped }).catch(() => {})
+      emit('mascot-visual-size', { size: nextSize }).catch(() => {})
+    }
+
+    const schedule = (scale: number) => {
+      latestScale = scale
+      if (rafId !== null) return
+      rafId = requestAnimationFrame(() => {
+        rafId = null
+        applyScale(latestScale)
+      })
+    }
+
+    const onMove = (ev: PointerEvent) => {
+      if (ev.pointerId !== pid) return
+      const dx = ev.screenX - startX
+      const dy = ev.screenY - startY
+      const targetSize = startSize + Math.max(dx, dy / aspect)
+      schedule(targetSize / baseSize)
+    }
+
+    const cleanup = async () => {
+      if (rafId !== null) {
+        cancelAnimationFrame(rafId)
+        rafId = null
+      }
+      applyScale(latestScale)
+      try {
+        const store = await load('settings.json', { defaults: {}, autoSave: true })
+        await store.set('large_mascot_scale', latestScale)
+        await store.save()
+      } catch {
+        /* main mini window also persists via mascot-scale-change */
+      }
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+      window.removeEventListener('pointercancel', onCancel)
+      setResizeHandleHovered(false)
+    }
+
+    const onUp = (ev: PointerEvent) => {
+      if (ev.pointerId !== pid) return
+      cleanup().catch(() => {})
+    }
+
+    const onCancel = (ev: PointerEvent) => {
+      if (ev.pointerId !== pid) return
+      cleanup().catch(() => {})
+    }
+
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp, { once: true })
+    window.addEventListener('pointercancel', onCancel, { once: true })
+  }, [size])
 
   // Mirror the main mini window's resolved mascot state. The main
   // window owns the claude/codex/cursor session polling and emits
@@ -276,6 +371,49 @@ export function DemoMascot({ functional = false }: { functional?: boolean }) {
         enableHoverJump
         suppressHover={dragging}
       />
+      <div
+        data-no-drag
+        onPointerEnter={() => setResizeHandleHovered(true)}
+        onPointerLeave={() => setResizeHandleHovered(false)}
+        onPointerDown={handleResizePointerDown}
+        style={{
+          position: 'absolute',
+          right: 0,
+          bottom: 0,
+          width: MASCOT_RESIZE_HANDLE_SIZE,
+          height: MASCOT_RESIZE_HANDLE_SIZE,
+          cursor: MASCOT_RESIZE_CURSOR,
+          pointerEvents: 'auto',
+          zIndex: 12,
+          touchAction: 'none',
+          background: 'rgba(255,255,255,0.01)',
+          display: 'flex',
+          alignItems: 'flex-end',
+          justifyContent: 'flex-end',
+          padding: 4,
+        }}
+      >
+        <div
+          style={{
+            width: MASCOT_RESIZE_ICON_SIZE,
+            height: MASCOT_RESIZE_ICON_SIZE,
+            borderRadius: 8,
+            background: 'rgba(255,255,255,0.94)',
+            boxShadow: '0 3px 10px rgba(0,0,0,0.22)',
+            color: '#1f2937',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            cursor: MASCOT_RESIZE_CURSOR,
+            opacity: resizeHandleHovered ? 1 : 0,
+            transform: resizeHandleHovered ? 'translateY(0) scale(1) rotate(90deg)' : 'translateY(3px) scale(0.92) rotate(90deg)',
+            transition: 'opacity 120ms ease, transform 120ms ease',
+            pointerEvents: 'none',
+          }}
+        >
+          <Maximize2 size={15} strokeWidth={2.4} />
+        </div>
+      </div>
       {/* Status indicator dot, mirroring the primary mascot's bottom-right
           light so coding-mode extra mascots show the same working/waiting/idle
           status. Decorative demo mascots stay clean. */}

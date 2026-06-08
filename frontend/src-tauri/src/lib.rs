@@ -56,6 +56,9 @@ static PET_CONTEXT_MENU_OPEN: AtomicBool = AtomicBool::new(false);
 /// stop button receives clicks (it sits in the centered hitbox's bottom
 /// inset region and would otherwise pass through to whatever is behind).
 static PET_POMODORO_ACTIVE: AtomicBool = AtomicBool::new(false);
+/// Latest pet-mode mascot scales. The click-through poll thread is long-lived,
+/// so it reads this on each pass instead of capturing the size it started with.
+static PET_MASCOT_SCALES: Mutex<(f64, f64)> = Mutex::new((1.0, LARGE_MASCOT_SIZE_MULTIPLIER));
 
 /// Coalesces drag-apply tasks so we never queue more than one
 /// setFrameOrigin: call on the main thread at a time. The poll thread
@@ -3752,6 +3755,9 @@ async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Opti
                 );
                 let _ = win.set_size(tauri::LogicalSize::new(win_w, win_h));
                 let _ = win.set_position(tauri::LogicalPosition::new(x, y));
+                if let Ok(mut f) = MINI_WINDOW_FRAME.lock() {
+                    *f = Some((x, y, win_w, win_h));
+                }
             } else {
                 let (base_w, base_h) = if large_mascot.unwrap_or(false) {
                     large_collapsed_mascot_window_size(mascot_scale, large_mascot_scale)
@@ -3760,6 +3766,11 @@ async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Opti
                 };
                 let win_w = (base_w * ui).round();
                 let win_h = (base_h * ui).round();
+                let (mut final_x, mut final_y) = if let Ok(pos) = win.outer_position() {
+                    (pos.x as f64 / scale, pos.y as f64 / scale)
+                } else {
+                    (mx, my)
+                };
                 let _ = win.set_size(tauri::LogicalSize::new(win_w, win_h));
                 if !keep_position.unwrap_or(false) {
                     if large_mascot.unwrap_or(false) {
@@ -3768,6 +3779,8 @@ async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Opti
                         let margin = (10.0 * ui).round();
                         let x = mx + sw - win_w - margin;
                         let y = my + sh - win_h - margin;
+                        final_x = x;
+                        final_y = y;
                         let _ = win.set_position(tauri::LogicalPosition::new(x, y));
                     } else {
                         let notch_off = (80.0 * ui).round();
@@ -3777,8 +3790,13 @@ async fn set_mini_expanded(app: tauri::AppHandle, expanded: bool, position: Opti
                             "[mini-pos] set_mini_expanded(win,collapsed) frame x={:.1} y={:.1} w={:.1} h={:.1} keep_position={}",
                             x, y, win_w, win_h, keep_position.unwrap_or(false)
                         );
+                        final_x = x;
+                        final_y = y;
                         let _ = win.set_position(tauri::LogicalPosition::new(x, y));
                     }
+                }
+                if let Ok(mut f) = MINI_WINDOW_FRAME.lock() {
+                    *f = Some((final_x, final_y, win_w, win_h));
                 }
             }
         }
@@ -5144,8 +5162,12 @@ async fn set_pet_mode_window(
     let win = app.get_webview_window("mini").ok_or("mini window not found")?;
     let mascot_scale = sanitized_mascot_scale(mascot_scale);
     let large_mascot_scale = large_mascot_scale.unwrap_or(LARGE_MASCOT_SIZE_MULTIPLIER);
+    if let Ok(mut scales) = PET_MASCOT_SCALES.lock() {
+        *scales = (mascot_scale, large_mascot_scale);
+    }
 
     if active {
+        let was_active = PET_PASSTHROUGH_ACTIVE.load(Ordering::SeqCst);
         // Expand window to menu-ready size (mascot area + padding for buttons).
         #[cfg(target_os = "macos")]
         {
@@ -5176,8 +5198,9 @@ async fn set_pet_mode_window(
                     if let Some((sx, sy, sw, sh)) = screen_info {
                         let left_pad = 180.0;
                         let top_pad = 100.0;
-                        let win_w = (current.size.width + left_pad).min(sw);
-                        let win_h = (current.size.height + top_pad).min(sh);
+                        let (mascot_w, mascot_h) = large_collapsed_mascot_window_size(mascot_scale, large_mascot_scale);
+                        let win_w = (mascot_w + left_pad).min(sw);
+                        let win_h = (mascot_h + top_pad).min(sh);
                         // Keep bottom-right corner fixed (mascot stays there).
                         let mut x = current.origin.x + current.size.width - win_w;
                         let y = current.origin.y;
@@ -5185,7 +5208,9 @@ async fn set_pet_mode_window(
                         let frame = NSRect::new(NSPoint::new(x, y), NSSize::new(win_w, win_h));
                         unsafe {
                             // Start with clicks passing through until the poll takes over.
-                            let _: () = msg_send![obj, setIgnoresMouseEvents: true];
+                            if !was_active {
+                                let _: () = msg_send![obj, setIgnoresMouseEvents: true];
+                            }
                             let _: () = msg_send![obj, setFrame: frame, display: true, animate: false];
                             let _: () = msg_send![obj, setLevel: 27isize];
                             let _: () = msg_send![obj, orderFrontRegardless];
@@ -5210,8 +5235,9 @@ async fn set_pet_mode_window(
                     let sh = monitor.size().height as f64 / scale;
                     let left_pad = 180.0;
                     let top_pad = 100.0;
-                    let win_w = (current_w + left_pad).min(sw);
-                    let win_h = (current_h + top_pad).min(sh);
+                    let (mascot_w, mascot_h) = large_collapsed_mascot_window_size(mascot_scale, large_mascot_scale);
+                    let win_w = (mascot_w + left_pad).min(sw);
+                    let win_h = (mascot_h + top_pad).min(sh);
                     // Keep bottom-right corner fixed so mascot stays anchored.
                     let x = (current_x + current_w - win_w).max(0.0).min(sw - win_w);
                     let y = current_y.max(0.0).min(sh - win_h);
@@ -5451,13 +5477,8 @@ fn pet_passthrough_poll(app: tauri::AppHandle, mascot_scale: f64, large_mascot_s
     use std::time::Duration;
     PET_PASSTHROUGH_THREAD_ALIVE.store(true, Ordering::SeqCst);
     let mut was_interactive = false;
-    let (mascot_w, mascot_h) = large_collapsed_mascot_window_size(mascot_scale, large_mascot_scale);
     // Keep these ratios aligned with frontend `Mini.tsx` so hover cursor and
     // native pass-through behavior remain consistent around mascot edges.
-    let hit_w = mascot_w * (2.4 / 3.0);
-    let hit_h = mascot_h * (2.8 / 3.0);
-    let inset_x = (mascot_w - hit_w) / 2.0;
-    let inset_y = (mascot_h - hit_h) / 2.0;
     let edge_threshold = 30.0;
     // Get screen bounds once at startup so we can detect edge proximity.
     let screen_bounds: Option<(f64, f64, f64, f64)> = {
@@ -5485,6 +5506,16 @@ fn pet_passthrough_poll(app: tauri::AppHandle, mascot_scale: f64, large_mascot_s
         let menu_open = PET_CONTEXT_MENU_OPEN.load(Ordering::SeqCst);
         let pomodoro_active = PET_POMODORO_ACTIVE.load(Ordering::SeqCst);
         let frame = MINI_WINDOW_FRAME.lock().ok().and_then(|g| *g);
+        let (current_mascot_scale, current_large_scale) = PET_MASCOT_SCALES
+            .lock()
+            .map(|g| *g)
+            .unwrap_or((mascot_scale, large_mascot_scale));
+        let (mascot_w, mascot_h) = large_collapsed_mascot_window_size(current_mascot_scale, current_large_scale);
+        let resize_handle = 34.0_f64.min(mascot_w).min(mascot_h);
+        let hit_w = mascot_w * (2.4 / 3.0);
+        let hit_h = mascot_h * (2.8 / 3.0);
+        let inset_x = (mascot_w - hit_w) / 2.0;
+        let inset_y = (mascot_h - hit_h) / 2.0;
 
         let should_be_interactive = if menu_open || pomodoro_active {
             true
@@ -5509,8 +5540,13 @@ fn pet_passthrough_poll(app: tauri::AppHandle, mascot_scale: f64, large_mascot_s
             let hit_right = mascot_right - ix;
             let hit_bottom = mascot_bottom + iy;
             let hit_top = mascot_bottom + mascot_h - iy;
-            cursor.0 >= hit_left && cursor.0 <= hit_right
-                && cursor.1 >= hit_bottom && cursor.1 <= hit_top
+            let over_body = cursor.0 >= hit_left && cursor.0 <= hit_right
+                && cursor.1 >= hit_bottom && cursor.1 <= hit_top;
+            let over_resize = cursor.0 >= mascot_right - resize_handle
+                && cursor.0 <= mascot_right
+                && cursor.1 >= mascot_bottom
+                && cursor.1 <= mascot_bottom + resize_handle;
+            over_body || over_resize
         } else {
             false
         };
@@ -5565,12 +5601,6 @@ fn pet_passthrough_poll_windows(app: tauri::AppHandle, mascot_scale: f64, large_
     use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
 
     PET_PASSTHROUGH_THREAD_ALIVE.store(true, Ordering::SeqCst);
-    // mascot dimensions in logical pixels (matches CSS px on Windows WebView2).
-    let (mascot_w_logical, mascot_h_logical) = large_collapsed_mascot_window_size(mascot_scale, large_mascot_scale);
-    let hit_w = mascot_w_logical * (1.8 / 3.0);
-    let hit_h = mascot_h_logical * (2.5 / 3.0);
-    let inset_x_logical = (mascot_w_logical - hit_w) / 2.0;
-    let inset_y_logical = (mascot_h_logical - hit_h) / 2.0;
     let edge_threshold_logical = 30.0_f64;
 
     let mut last_state: Option<bool> = None;
@@ -5578,6 +5608,17 @@ fn pet_passthrough_poll_windows(app: tauri::AppHandle, mascot_scale: f64, large_
     while PET_PASSTHROUGH_ACTIVE.load(Ordering::SeqCst) {
         let menu_open = PET_CONTEXT_MENU_OPEN.load(Ordering::SeqCst);
         let pomodoro_active = PET_POMODORO_ACTIVE.load(Ordering::SeqCst);
+        let (current_mascot_scale, current_large_scale) = PET_MASCOT_SCALES
+            .lock()
+            .map(|g| *g)
+            .unwrap_or((mascot_scale, large_mascot_scale));
+        // mascot dimensions in logical pixels (matches CSS px on Windows WebView2).
+        let (mascot_w_logical, mascot_h_logical) = large_collapsed_mascot_window_size(current_mascot_scale, current_large_scale);
+        let resize_handle_logical = 34.0_f64.min(mascot_w_logical).min(mascot_h_logical);
+        let hit_w = mascot_w_logical * (1.8 / 3.0);
+        let hit_h = mascot_h_logical * (2.5 / 3.0);
+        let inset_x_logical = (mascot_w_logical - hit_w) / 2.0;
+        let inset_y_logical = (mascot_h_logical - hit_h) / 2.0;
 
         let should_be_interactive = if menu_open || pomodoro_active {
             true
@@ -5610,6 +5651,7 @@ fn pet_passthrough_poll_windows(app: tauri::AppHandle, mascot_scale: f64, large_
                         // physical px is fx + fw and its bottom is fy + fh.
                         let mascot_w = mascot_w_logical * scale;
                         let mascot_h = mascot_h_logical * scale;
+                        let resize_handle = resize_handle_logical * scale;
                         let inset_x = inset_x_logical * scale;
                         let inset_y = inset_y_logical * scale;
                         let edge_threshold = edge_threshold_logical * scale;
@@ -5639,8 +5681,13 @@ fn pet_passthrough_poll_windows(app: tauri::AppHandle, mascot_scale: f64, large_
                         let hit_top = mascot_top + iy;
                         let hit_bottom = mascot_bottom - iy;
 
-                        cx >= hit_left && cx <= hit_right
-                            && cy >= hit_top && cy <= hit_bottom
+                        let over_body = cx >= hit_left && cx <= hit_right
+                            && cy >= hit_top && cy <= hit_bottom;
+                        let over_resize = cx >= mascot_right - resize_handle
+                            && cx <= mascot_right
+                            && cy >= mascot_bottom - resize_handle
+                            && cy <= mascot_bottom;
+                        over_body || over_resize
                     } else {
                         false
                     }
