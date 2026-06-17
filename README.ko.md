@@ -6,6 +6,9 @@
   <a href="https://www.oc-claw.ai"><img src="https://img.shields.io/badge/공식_웹사이트에서_다운로드-oc--claw.ai-8A2BE2?style=for-the-badge" alt="Download" /></a>
 </p>
 <p align="center">
+  <a href="https://www.producthunt.com/products/oc-claw?embed=true&amp;utm_source=badge-featured&amp;utm_medium=badge&amp;utm_campaign=badge-oc-claw" target="_blank" rel="noopener noreferrer"><img alt="OC-Claw - A desktop pet that monitors your AI coding agents  | Product Hunt" width="250" height="54" src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1173374&amp;theme=light&amp;t=1781683113675"></a>
+</p>
+<p align="center">
   <a href="./README.md">English</a> | <a href="./README.zh.md">中文</a> | <a href="./README.ja.md">日本語</a> | <b>한국어</b> | <a href="./README.es.md">Español</a> | <a href="./README.fr.md">Français</a>
 </p>
 <p align="center">
